@@ -1,0 +1,17 @@
+services:
+  bpmn:
+    build: .
+    image: bpmn-pipeline
+    container_name: bpmn-pipeline
+    # Sempre religa (após crash ou reboot da máquina), mas não se você parar de propósito.
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+    # Lê ANTHROPIC_API_KEY e ANTHROPIC_MODEL do .env (mesmo arquivo do CLI).
+    env_file:
+      - .env
+    # Persiste o banco SQLite fora do container. Backup = copiar a pasta ./data.
+    volumes:
+      - ./data:/app/data

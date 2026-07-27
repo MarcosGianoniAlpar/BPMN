@@ -1,0 +1,8 @@
+{
+  "extends": "bpmnlint:recommended",
+  "rules": {
+    "label-required": "warn",
+    "start-event-required": "error",
+    "end-event-required": "error"
+  }
+}

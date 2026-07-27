@@ -1,0 +1,30 @@
+# Dependencias
+node_modules/
+
+# Build
+dist/
+
+# Ambiente / segredos
+.env
+.env.local
+
+# Saidas geradas
+output/*
+!output/.gitkeep
+
+# Banco de dados local (persistencia de projetos/versoes)
+data/
+
+# Relatorios de avaliacao gerados
+evaluations/reports/
+
+# Documentos reais de teste (confidenciais)
+test-documents/*
+!test-documents/.gitkeep
+!test-documents/README.md
+!test-documents/exemplo-*.md
+
+# Logs e SO
+*.log
+.DS_Store
+Thumbs.db

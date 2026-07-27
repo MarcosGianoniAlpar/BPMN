@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Alpar · Documento → BPMN</title>
+    <link rel="stylesheet" href="/vendor/assets/diagram-js.css" />
+    <link rel="stylesheet" href="/vendor/assets/bpmn-js.css" />
+    <!-- Ícones da paleta/context-pad do modeler (font embutida, sem fetch externo) -->
+    <link rel="stylesheet" href="/vendor/assets/bpmn-font/css/bpmn-embedded.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="logo" src="/alpar-colorido.png" alt="Alpar" />
+        <span class="brand-sep"></span>
+        <div class="product">
+          <h1>Documento → BPMN</h1>
+          <p>Extrai o processo de uma ata e gera o diagrama BPMN — com evidências e perguntas.</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="freeze-btn" class="ghost" hidden title="Salva o diagrama atual (com suas edições) como uma versão congelada">Congelar versão</button>
+        <button id="dl-bpmn" class="ghost" hidden>Baixar .bpmn</button>
+        <button id="dl-svg" class="ghost" hidden>Baixar SVG</button>
+        <button id="dl-png" class="ghost" hidden>Baixar PNG</button>
+        <button id="new-btn" class="ghost" hidden>Novo documento</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Estado inicial: upload -->
+      <section id="dropzone" class="dropzone">
+        <div class="drop-inner">
+          <div class="drop-icon">⤒</div>
+          <p class="drop-title">Arraste uma ata aqui</p>
+          <p class="drop-sub">ou</p>
+          <label class="file-btn">
+            Escolher arquivo
+            <input id="file-input" type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden />
+          </label>
+          <p class="drop-hint">Formatos: .txt, .md, .pdf, .docx</p>
+        </div>
+      </section>
+
+      <!-- Processos salvos (aparece na home quando ha projetos) -->
+      <section id="projects-panel" class="projects-panel" hidden>
+        <h2>Processos salvos</h2>
+        <ul id="projects-list"></ul>
+      </section>
+
+      <!-- Uso & custo (aparece na home quando ja houve gerações) -->
+      <section id="usage-panel" class="usage-panel" hidden>
+        <h2>Uso &amp; custo <span class="usage-hint">(estimativa por preços de lista)</span></h2>
+        <div class="usage-totals" id="usage-totals"></div>
+        <table class="usage-table" id="usage-table"></table>
+      </section>
+
+      <!-- Estado com resultado -->
+      <section id="workspace" class="workspace" hidden>
+        <aside class="inspector">
+          <div class="proc-head">
+            <h2 id="proc-name">—</h2>
+            <span id="version-badge" class="version-badge" hidden></span>
+            <p id="proc-desc" class="proc-desc"></p>
+          </div>
+
+          <div class="metrics" id="metrics"></div>
+
+          <details class="pipeline-log" id="pipeline-log" hidden>
+            <summary>Como este diagrama foi gerado</summary>
+            <ol id="pipeline-steps"></ol>
+            <p class="log-note">
+              A IA (Sonnet 5) só produz o <strong>modelo do processo</strong> (a lista de
+              nós e fluxos). O <strong>BPMN e as posições são gerados por código
+              determinístico</strong> — a IA não desenha o diagrama.
+            </p>
+          </details>
+
+          <div id="questions" class="questions" hidden>
+            <h3>Perguntas de esclarecimento</h3>
+            <p class="q-hint">
+              Responda o que você souber e recompile — o diagrama se completa com
+              as respostas. Deixe em branco o que ainda não estiver definido.
+            </p>
+            <ul id="questions-list"></ul>
+            <button id="apply-answers" class="apply-btn">
+              Aplicar respostas e recompilar
+            </button>
+          </div>
+
+          <div id="lint" class="lint" hidden>
+            <h3>Validação BPMN <span id="lint-count" class="pill"></span></h3>
+            <ul id="lint-list"></ul>
+          </div>
+
+          <div class="nodes">
+            <h3>Elementos <span id="nodes-count" class="pill"></span></h3>
+            <p class="nodes-hint">Clique para destacar no diagrama.</p>
+            <ul id="nodes-list"></ul>
+          </div>
+        </aside>
+
+        <div class="canvas-wrap">
+          <div id="canvas"></div>
+          <div class="canvas-toolbar">
+            <button id="zoom-fit" title="Ajustar">⤢</button>
+            <button id="zoom-in" title="Aproximar">＋</button>
+            <button id="zoom-out" title="Afastar">－</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Overlay de carregamento com progresso por etapa -->
+    <div id="loading" class="loading" hidden>
+      <div class="progress-card">
+        <h3>Gerando o diagrama</h3>
+        <ol class="steps" id="steps">
+          <li data-stage="extract">
+            <span class="dot"></span>
+            <span class="lbl">Extraindo o processo <em>(IA — pode levar até ~1 min)</em></span>
+            <span class="t"></span>
+          </li>
+          <li data-stage="validate">
+            <span class="dot"></span><span class="lbl">Validando o ProcessSpec</span><span class="t"></span>
+          </li>
+          <li data-stage="compile">
+            <span class="dot"></span><span class="lbl">Compilando o BPMN</span><span class="t"></span>
+          </li>
+          <li data-stage="layout">
+            <span class="dot"></span><span class="lbl">Aplicando o layout</span><span class="t"></span>
+          </li>
+          <li data-stage="lint">
+            <span class="dot"></span><span class="lbl">Checando com bpmnlint</span><span class="t"></span>
+          </li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Toast de erro -->
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="/vendor/bpmn-modeler.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

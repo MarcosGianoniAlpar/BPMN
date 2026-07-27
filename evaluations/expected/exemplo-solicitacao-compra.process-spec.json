@@ -1,0 +1,155 @@
+{
+  "process": {
+    "id": "processo_solicitacao_compra",
+    "name": "Processo de solicitacao de compra de materiais",
+    "description": "Processo que descreve como uma solicitacao de compra e criada, avaliada e, se aprovada, paga pelo setor financeiro."
+  },
+  "participants": [
+    {
+      "id": "empresa_interna",
+      "name": "Empresa (areas internas)",
+      "type": "internal"
+    },
+    {
+      "id": "fornecedor",
+      "name": "Fornecedor",
+      "type": "external"
+    }
+  ],
+  "lanes": [
+    {
+      "id": "lane_solicitante",
+      "name": "Solicitante",
+      "participant_id": "empresa_interna"
+    },
+    {
+      "id": "lane_gestor",
+      "name": "Gestor da area",
+      "participant_id": "empresa_interna"
+    },
+    {
+      "id": "lane_financeiro",
+      "name": "Setor Financeiro",
+      "participant_id": "empresa_interna"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "start_identify_need",
+      "type": "start_event",
+      "name": "Colaborador identifica necessidade de item",
+      "lane_id": "lane_solicitante",
+      "evidence": [
+        {
+          "quote": "tudo comeca quando um colaborador identifica a necessidade de um item",
+          "page": 1
+        }
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "submit_request",
+      "type": "user_task",
+      "name": "Preencher e enviar solicitacao de compra",
+      "lane_id": "lane_solicitante",
+      "evidence": [
+        {
+          "quote": "O solicitante entao preenche e envia a solicitacao de compra pelo sistema interno.",
+          "page": 1
+        }
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "evaluate_request",
+      "type": "user_task",
+      "name": "Avaliar solicitacao de compra",
+      "lane_id": "lane_gestor",
+      "evidence": [
+        {
+          "quote": "Em seguida, o gestor da area avalia a solicitacao.",
+          "page": 1
+        }
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "gateway_decision",
+      "type": "exclusive_gateway",
+      "name": "Solicitacao aprovada?",
+      "lane_id": "lane_gestor",
+      "evidence": [
+        {
+          "quote": "se a solicitacao for aprovada, ela segue para o setor financeiro",
+          "page": 1
+        }
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "process_payment",
+      "type": "user_task",
+      "name": "Realizar pagamento ao fornecedor",
+      "lane_id": "lane_financeiro",
+      "evidence": [
+        {
+          "quote": "o setor financeiro, que realiza o pagamento ao fornecedor",
+          "page": 1
+        }
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "end_process",
+      "type": "end_event",
+      "name": "Processo encerrado com comprovante arquivado",
+      "lane_id": "lane_financeiro",
+      "evidence": [
+        {
+          "quote": "encerra o processo com o comprovante arquivado",
+          "page": 1
+        }
+      ],
+      "confidence": "high"
+    }
+  ],
+  "flows": [
+    {
+      "id": "flow_start_to_submit",
+      "source": "start_identify_need",
+      "target": "submit_request"
+    },
+    {
+      "id": "flow_submit_to_evaluate",
+      "source": "submit_request",
+      "target": "evaluate_request"
+    },
+    {
+      "id": "flow_evaluate_to_gateway",
+      "source": "evaluate_request",
+      "target": "gateway_decision"
+    },
+    {
+      "id": "flow_gateway_to_payment",
+      "source": "gateway_decision",
+      "target": "process_payment",
+      "name": "Aprovado",
+      "condition": "Solicitacao aprovada"
+    },
+    {
+      "id": "flow_payment_to_end",
+      "source": "process_payment",
+      "target": "end_process"
+    }
+  ],
+  "unresolved_questions": [
+    {
+      "id": "q_rejected_path",
+      "question": "O que acontece quando o gestor rejeita a solicitacao? O processo e encerrado diretamente ou a solicitacao volta para o solicitante corrigir?",
+      "reason": "O documento explicitamente diz que o grupo nao chegou a um consenso sobre o caminho de rejeicao, entao nao ha informacao suficiente para modelar esse fluxo.",
+      "affected_nodes": [
+        "gateway_decision"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "name": "bpmn-pipeline",
+  "version": "0.1.0",
+  "description": "Pipeline LLM -> BPMN: extrai um ProcessSpec de documentos e compila BPMN 2.0 valido de forma deterministica.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "bin": {
+    "bpmn-pipeline": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "web": "tsx src/server.ts",
+    "eval": "tsx src/eval/runEval.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "start:web": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "gen:types": "json2ts -i schemas/process-spec.schema.json -o src/types/process-spec.ts --bannerComment \"/* GERADO por 'npm run gen:types' a partir de schemas/process-spec.schema.json. Nao editar a mao. */\"",
+    "lint": "eslint .",
+    "lint:bpmn": "bpmnlint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "keywords": [
+    "bpmn",
+    "llm",
+    "process-mining",
+    "bpmn-moddle",
+    "bpmn-auto-layout"
+  ],
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "bpmn-auto-layout": "^1.3.0",
+    "bpmn-js": "^18.22.0",
+    "bpmn-moddle": "^9.0.1",
+    "bpmnlint": "^11.4.0",
+    "dotenv": "^16.4.7",
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^6.1.200"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
+  }
+}
