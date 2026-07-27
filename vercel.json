@@ -5,7 +5,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/**/*.ts": {
-      "includeFiles": ".bpmnlintrc"
+      "includeFiles": "node_modules/@napi-rs/canvas*/**"
     }
   }
 }
