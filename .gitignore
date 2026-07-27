@@ -4,6 +4,12 @@ node_modules/
 # Build
 dist/
 
+# Assets do bpmn-js copiados no build (gerados por scripts/copy-vendor.mjs)
+public/vendor/
+
+# Diretorio local do Vercel CLI
+.vercel/
+
 # Ambiente / segredos
 .env
 .env.local
