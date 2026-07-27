@@ -153,7 +153,7 @@ async function streamRun(
   title: string,
   run: (onProgress: ProgressFn) => Promise<PipelineResult>,
   // Persiste o resultado e devolve campos extras (ex.: projectId) para o cliente.
-  persist?: (result: PipelineResult) => Record<string, unknown>,
+  persist?: (result: PipelineResult) => Promise<Record<string, unknown>>,
 ): Promise<void> {
   res.writeHead(200, {
     'content-type': 'application/x-ndjson; charset=utf-8',
@@ -180,7 +180,7 @@ async function streamRun(
     let persisted: Record<string, unknown> = {};
     if (persist) {
       try {
-        persisted = persist(result);
+        persisted = await persist(result);
       } catch (err) {
         console.log(`  AVISO: falha ao salvar no banco: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -229,8 +229,8 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
     config,
     `Geracao (${filename})`,
     (onProgress) => runPipeline(text, config, onProgress),
-    (result) => {
-      const { projectId, versionNumber } = createProjectWithVersion({
+    async (result) => {
+      const { projectId, versionNumber } = await createProjectWithVersion({
         name: result.spec.process.name || result.spec.process.id,
         sourceFilename: filename,
         sourceText: text,
@@ -285,9 +285,9 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
         onProgress,
       ),
     // Refinamento vira uma nova versao do projeto existente (se houver id).
-    (result) => {
+    async (result) => {
       if (!projectId) return {};
-      const { versionNumber } = addVersion(projectId, {
+      const { versionNumber } = await addVersion(projectId, {
         kind: 'refined',
         spec: result.spec,
         bpmnXml: result.layoutXml,
@@ -310,23 +310,23 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
  *   GET    /api/projects/{id}/versions/{n}     -> versao completa (spec + bpmn)
  *   DELETE /api/projects/{id}                  -> apaga o projeto
  */
-function handleProjectsApi(
+async function handleProjectsApi(
   method: string,
   segments: string[],
   res: ServerResponse,
-): boolean {
+): Promise<boolean> {
   // segments = ['api','projects', ...]
   if (segments[0] !== 'api' || segments[1] !== 'projects') return false;
 
   const id = segments[2];
 
   if (method === 'GET' && segments.length === 2) {
-    sendJson(res, 200, { projects: listProjects() });
+    sendJson(res, 200, { projects: await listProjects() });
     return true;
   }
 
   if (method === 'GET' && segments.length === 3 && id) {
-    const detail = getProjectDetail(id);
+    const detail = await getProjectDetail(id);
     if (!detail) sendJson(res, 404, { error: 'Projeto nao encontrado.' });
     else sendJson(res, 200, detail);
     return true;
@@ -339,14 +339,14 @@ function handleProjectsApi(
     segments[3] === 'versions'
   ) {
     const n = Number(segments[4]);
-    const version = Number.isInteger(n) ? getVersion(id, n) : undefined;
+    const version = Number.isInteger(n) ? await getVersion(id, n) : undefined;
     if (!version) sendJson(res, 404, { error: 'Versao nao encontrada.' });
     else sendJson(res, 200, version);
     return true;
   }
 
   if (method === 'DELETE' && segments.length === 3 && id) {
-    const ok = deleteProject(id);
+    const ok = await deleteProject(id);
     if (!ok) sendJson(res, 404, { error: 'Projeto nao encontrado.' });
     else sendJson(res, 200, { deleted: true });
     return true;
@@ -379,7 +379,7 @@ async function handleFreeze(
   }
 
   try {
-    const { versionNumber } = addVersion(projectId, {
+    const { versionNumber } = await addVersion(projectId, {
       kind: 'frozen',
       spec: payload.spec as Parameters<typeof addVersion>[1]['spec'],
       bpmnXml,
@@ -431,14 +431,19 @@ const server = createServer((req, res) => {
 
   // Relatorio de uso/custo
   if (method === 'GET' && url === '/api/usage') {
-    sendJson(res, 200, getUsageReport());
+    guard((async () => sendJson(res, 200, await getUsageReport()))());
     return;
   }
 
   // API de projetos salvos (GET/DELETE)
   if ((method === 'GET' || method === 'DELETE') && segments[0] === 'api' && segments[1] === 'projects') {
-    if (handleProjectsApi(method, segments, res)) return;
-    sendJson(res, 404, { error: 'Rota de projeto nao encontrada.' });
+    guard(
+      (async () => {
+        if (!(await handleProjectsApi(method, segments, res)) && !res.headersSent) {
+          sendJson(res, 404, { error: 'Rota de projeto nao encontrada.' });
+        }
+      })(),
+    );
     return;
   }
 

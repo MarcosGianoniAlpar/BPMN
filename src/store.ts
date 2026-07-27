@@ -1,18 +1,18 @@
-import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join } from 'node:path';
+import postgres from 'postgres';
 import type { ProcessSpec } from './types/process-spec.js';
 import type { LintResult } from './lintBpmn.js';
 import { estimateCost, priceLabel } from './pricing.js';
 
 /**
- * Persistencia local em SQLite (modulo nativo do Node 22.5+, sem dependencia
- * externa). Modelo: um PROJETO por documento, com uma sequencia ordenada de
- * VERSOES. Coerente com a Opcao A da arquitetura — o ProcessSpec e a fonte da
- * verdade; cada geracao/revisao/congelamento vira uma versao nova, nunca
- * sobrescreve a anterior.
+ * Persistencia em PostgreSQL (Supabase). Modelo: um PROJETO por documento, com
+ * uma sequencia ordenada de VERSOES. Coerente com a Opcao A da arquitetura — o
+ * ProcessSpec e a fonte da verdade; cada geracao/revisao/congelamento vira uma
+ * versao nova, nunca sobrescreve a anterior.
+ *
+ * Conexao via DATABASE_URL. Em serverless (Vercel) use a connection string do
+ * *pooler* do Supabase (porta 6543, modo Transaction); por isso `prepare:false`
+ * (o pooler em modo transaction nao suporta prepared statements).
  */
 
 export type VersionKind = 'generated' | 'refined' | 'frozen';
@@ -55,68 +55,81 @@ export interface ProjectDetail extends ProjectSummary {
   versions: VersionMeta[];
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_DB_PATH = resolve(
-  __dirname,
-  '..',
-  process.env.BPMN_DB_PATH ?? join('data', 'bpmn.db'),
-);
+// ---- Conexao (singleton por instancia/processo) ----
 
-let db: DatabaseSync | undefined;
+type Sql = postgres.Sql;
 
-function getDb(): DatabaseSync {
-  if (db) return db;
-  mkdirSync(dirname(DEFAULT_DB_PATH), { recursive: true });
-  db = new DatabaseSync(DEFAULT_DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      source_filename TEXT,
-      source_text TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+let sqlClient: Sql | undefined;
+
+function getSql(): Sql {
+  if (sqlClient) return sqlClient;
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      'DATABASE_URL nao definida. Copie a connection string do Supabase ' +
+        '(Settings > Database > Connection pooling, porta 6543) para o .env / env do Vercel.',
     );
-    CREATE TABLE IF NOT EXISTS versions (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      version_number INTEGER NOT NULL,
-      kind TEXT NOT NULL,
-      process_spec TEXT NOT NULL,
-      bpmn_xml TEXT NOT NULL,
-      lint TEXT,
-      note TEXT,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_versions_project
-      ON versions(project_id, version_number);
-  `);
-  migrateUsageColumns(db);
-  return db;
-}
-
-/**
- * Migracao idempotente: adiciona colunas de uso (tokens + modelo) a bancos que
- * foram criados antes do relatorio de custo existir. node:sqlite nao tem
- * "ADD COLUMN IF NOT EXISTS", entao checamos o schema antes.
- */
-function migrateUsageColumns(d: DatabaseSync): void {
-  const cols = d.prepare('PRAGMA table_info(versions)').all() as Array<{ name: string }>;
-  const have = new Set(cols.map((c) => c.name));
-  if (!have.has('input_tokens')) d.exec('ALTER TABLE versions ADD COLUMN input_tokens INTEGER');
-  if (!have.has('output_tokens')) d.exec('ALTER TABLE versions ADD COLUMN output_tokens INTEGER');
-  if (!have.has('model')) d.exec('ALTER TABLE versions ADD COLUMN model TEXT');
-}
-
-function nodeCountOf(specJson: string): number {
-  try {
-    const spec = JSON.parse(specJson) as ProcessSpec;
-    return spec.nodes?.length ?? 0;
-  } catch {
-    return 0;
   }
+  sqlClient = postgres(url, {
+    prepare: false, // pooler transaction-mode do Supabase nao suporta prepared statements
+    ssl: 'require', // Supabase exige TLS
+    idle_timeout: 20,
+    max: 5,
+  });
+  return sqlClient;
+}
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS projects (
+    id uuid PRIMARY KEY,
+    name text NOT NULL,
+    source_filename text,
+    source_text text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS versions (
+    id uuid PRIMARY KEY,
+    project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_number integer NOT NULL,
+    kind text NOT NULL,
+    process_spec jsonb NOT NULL,
+    bpmn_xml text NOT NULL,
+    lint jsonb,
+    note text,
+    input_tokens integer,
+    output_tokens integer,
+    model text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_versions_project
+    ON versions(project_id, version_number);
+`;
+
+let schemaReady: Promise<void> | undefined;
+
+/** Garante o schema uma vez por instancia (idempotente; barato). */
+function ensureSchema(sql: Sql): Promise<void> {
+  if (!schemaReady) schemaReady = sql.unsafe(SCHEMA_SQL).then(() => undefined);
+  return schemaReady;
+}
+
+/** Handle pronto para uso: conecta e garante o schema. */
+async function db(): Promise<Sql> {
+  const sql = getSql();
+  await ensureSchema(sql);
+  return sql;
+}
+
+// ---- Helpers ----
+
+function toIso(v: unknown): string {
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
+function nodeCountOf(spec: unknown): number {
+  const nodes = (spec as ProcessSpec | null)?.nodes;
+  return Array.isArray(nodes) ? nodes.length : 0;
 }
 
 interface NewVersionInput {
@@ -132,168 +145,118 @@ interface NewVersionInput {
 }
 
 /** Cria um projeto com sua primeira versao (a geracao inicial). */
-export function createProjectWithVersion(input: {
+export async function createProjectWithVersion(input: {
   name: string;
   sourceFilename?: string | null;
   sourceText: string;
   first: NewVersionInput;
-}): { projectId: string; versionId: string; versionNumber: number } {
-  const d = getDb();
-  const now = new Date().toISOString();
+}): Promise<{ projectId: string; versionId: string; versionNumber: number }> {
+  const sql = await db();
   const projectId = randomUUID();
 
-  const tx = d.prepare('BEGIN');
-  tx.run();
-  try {
-    d.prepare(
-      `INSERT INTO projects (id, name, source_filename, source_text, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(projectId, input.name, input.sourceFilename ?? null, input.sourceText, now, now);
-
-    const { versionId, versionNumber } = insertVersion(d, projectId, input.first, now);
-    d.prepare('COMMIT').run();
+  return sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO projects (id, name, source_filename, source_text)
+      VALUES (${projectId}, ${input.name}, ${input.sourceFilename ?? null}, ${input.sourceText})
+    `;
+    const { versionId, versionNumber } = await insertVersion(tx, projectId, input.first);
     return { projectId, versionId, versionNumber };
-  } catch (err) {
-    d.prepare('ROLLBACK').run();
-    throw err;
-  }
-}
-
-/** Adiciona uma nova versao (refinamento ou congelamento) a um projeto existente. */
-export function addVersion(
-  projectId: string,
-  input: NewVersionInput,
-): { versionId: string; versionNumber: number } {
-  const d = getDb();
-  const project = d.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
-  if (!project) throw new Error(`Projeto nao encontrado: ${projectId}`);
-
-  const now = new Date().toISOString();
-  const tx = d.prepare('BEGIN');
-  tx.run();
-  try {
-    const res = insertVersion(d, projectId, input, now);
-    d.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(now, projectId);
-    d.prepare('COMMIT').run();
-    return res;
-  } catch (err) {
-    d.prepare('ROLLBACK').run();
-    throw err;
-  }
-}
-
-function insertVersion(
-  d: DatabaseSync,
-  projectId: string,
-  input: NewVersionInput,
-  now: string,
-): { versionId: string; versionNumber: number } {
-  const row = d
-    .prepare(
-      'SELECT COALESCE(MAX(version_number), 0) AS n FROM versions WHERE project_id = ?',
-    )
-    .get(projectId) as { n: number };
-  const versionNumber = row.n + 1;
-  const versionId = randomUUID();
-  d.prepare(
-    `INSERT INTO versions
-       (id, project_id, version_number, kind, process_spec, bpmn_xml, lint, note,
-        input_tokens, output_tokens, model, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    versionId,
-    projectId,
-    versionNumber,
-    input.kind,
-    JSON.stringify(input.spec),
-    input.bpmnXml,
-    input.lint ? JSON.stringify(input.lint) : null,
-    input.note ?? null,
-    input.usage?.inputTokens ?? null,
-    input.usage?.outputTokens ?? null,
-    input.model ?? null,
-    now,
-  );
-  return { versionId, versionNumber };
-}
-
-export function listProjects(): ProjectSummary[] {
-  const d = getDb();
-  const rows = d
-    .prepare(
-      `SELECT p.id, p.name, p.source_filename, p.created_at, p.updated_at,
-              COUNT(v.id) AS version_count,
-              MAX(v.version_number) AS latest_number
-       FROM projects p
-       LEFT JOIN versions v ON v.project_id = p.id
-       GROUP BY p.id
-       ORDER BY p.updated_at DESC`,
-    )
-    .all() as Array<{
-    id: string;
-    name: string;
-    source_filename: string | null;
-    created_at: string;
-    updated_at: string;
-    version_count: number;
-    latest_number: number | null;
-  }>;
-
-  return rows.map((r) => {
-    const latest = d
-      .prepare(
-        `SELECT kind, process_spec FROM versions
-         WHERE project_id = ? ORDER BY version_number DESC LIMIT 1`,
-      )
-      .get(r.id) as { kind: VersionKind; process_spec: string } | undefined;
-    return {
-      id: r.id,
-      name: r.name,
-      sourceFilename: r.source_filename,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-      versionCount: r.version_count,
-      latestVersionNumber: r.latest_number ?? 0,
-      latestKind: latest?.kind ?? 'generated',
-      nodeCount: latest ? nodeCountOf(latest.process_spec) : 0,
-    };
   });
 }
 
-export function getProjectDetail(projectId: string): ProjectDetail | undefined {
-  const d = getDb();
-  const p = d.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as
-    | {
-        id: string;
-        name: string;
-        source_filename: string | null;
-        source_text: string;
-        created_at: string;
-        updated_at: string;
-      }
-    | undefined;
+/** Adiciona uma nova versao (refinamento ou congelamento) a um projeto existente. */
+export async function addVersion(
+  projectId: string,
+  input: NewVersionInput,
+): Promise<{ versionId: string; versionNumber: number }> {
+  const sql = await db();
+  const [project] = await sql`SELECT id FROM projects WHERE id = ${projectId}`;
+  if (!project) throw new Error(`Projeto nao encontrado: ${projectId}`);
+
+  return sql.begin(async (tx) => {
+    const res = await insertVersion(tx, projectId, input);
+    await tx`UPDATE projects SET updated_at = now() WHERE id = ${projectId}`;
+    return res;
+  });
+}
+
+async function insertVersion(
+  sql: postgres.TransactionSql,
+  projectId: string,
+  input: NewVersionInput,
+): Promise<{ versionId: string; versionNumber: number }> {
+  const rows = await sql<{ n: number }[]>`
+    SELECT COALESCE(MAX(version_number), 0)::int AS n
+    FROM versions WHERE project_id = ${projectId}
+  `;
+  const versionNumber = Number(rows[0]?.n ?? 0) + 1;
+  const versionId = randomUUID();
+  const specJson = input.spec as unknown as postgres.JSONValue;
+  const lintJson = input.lint ? (input.lint as unknown as postgres.JSONValue) : null;
+  await sql`
+    INSERT INTO versions
+      (id, project_id, version_number, kind, process_spec, bpmn_xml, lint, note,
+       input_tokens, output_tokens, model)
+    VALUES (
+      ${versionId}, ${projectId}, ${versionNumber}, ${input.kind},
+      ${sql.json(specJson)}, ${input.bpmnXml},
+      ${lintJson === null ? null : sql.json(lintJson)}, ${input.note ?? null},
+      ${input.usage?.inputTokens ?? null}, ${input.usage?.outputTokens ?? null},
+      ${input.model ?? null}
+    )
+  `;
+  return { versionId, versionNumber };
+}
+
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const sql = await db();
+  const rows = await sql`
+    SELECT p.id, p.name, p.source_filename, p.created_at, p.updated_at,
+           COUNT(v.id)::int          AS version_count,
+           MAX(v.version_number)::int AS latest_number
+    FROM projects p
+    LEFT JOIN versions v ON v.project_id = p.id
+    GROUP BY p.id
+    ORDER BY p.updated_at DESC
+  `;
+
+  const summaries: ProjectSummary[] = [];
+  for (const r of rows) {
+    const [latest] = await sql`
+      SELECT kind, process_spec FROM versions
+      WHERE project_id = ${r.id} ORDER BY version_number DESC LIMIT 1
+    `;
+    summaries.push({
+      id: r.id,
+      name: r.name,
+      sourceFilename: r.source_filename,
+      createdAt: toIso(r.created_at),
+      updatedAt: toIso(r.updated_at),
+      versionCount: Number(r.version_count),
+      latestVersionNumber: r.latest_number ?? 0,
+      latestKind: (latest?.kind as VersionKind) ?? 'generated',
+      nodeCount: latest ? nodeCountOf(latest.process_spec) : 0,
+    });
+  }
+  return summaries;
+}
+
+export async function getProjectDetail(projectId: string): Promise<ProjectDetail | undefined> {
+  const sql = await db();
+  const [p] = await sql`SELECT * FROM projects WHERE id = ${projectId}`;
   if (!p) return undefined;
 
-  const versions = d
-    .prepare(
-      `SELECT id, version_number, kind, process_spec, note, created_at
-       FROM versions WHERE project_id = ? ORDER BY version_number ASC`,
-    )
-    .all(projectId) as Array<{
-    id: string;
-    version_number: number;
-    kind: VersionKind;
-    process_spec: string;
-    note: string | null;
-    created_at: string;
-  }>;
+  const versions = await sql`
+    SELECT id, version_number, kind, process_spec, note, created_at
+    FROM versions WHERE project_id = ${projectId} ORDER BY version_number ASC
+  `;
 
   const meta: VersionMeta[] = versions.map((v) => ({
     id: v.id,
     versionNumber: v.version_number,
-    kind: v.kind,
+    kind: v.kind as VersionKind,
     note: v.note,
-    createdAt: v.created_at,
+    createdAt: toIso(v.created_at),
     nodeCount: nodeCountOf(v.process_spec),
   }));
 
@@ -303,8 +266,8 @@ export function getProjectDetail(projectId: string): ProjectDetail | undefined {
     name: p.name,
     sourceFilename: p.source_filename,
     sourceText: p.source_text,
-    createdAt: p.created_at,
-    updatedAt: p.updated_at,
+    createdAt: toIso(p.created_at),
+    updatedAt: toIso(p.updated_at),
     versionCount: meta.length,
     latestVersionNumber: last?.versionNumber ?? 0,
     latestKind: last?.kind ?? 'generated',
@@ -317,51 +280,51 @@ function rowToVersion(row: {
   id: string;
   project_id: string;
   version_number: number;
-  kind: VersionKind;
-  process_spec: string;
+  kind: string;
+  process_spec: unknown;
   bpmn_xml: string;
-  lint: string | null;
+  lint: unknown;
   note: string | null;
-  created_at: string;
+  created_at: unknown;
 }): VersionRecord {
   return {
     id: row.id,
     projectId: row.project_id,
     versionNumber: row.version_number,
-    kind: row.kind,
-    spec: JSON.parse(row.process_spec) as ProcessSpec,
+    kind: row.kind as VersionKind,
+    spec: row.process_spec as ProcessSpec,
     bpmnXml: row.bpmn_xml,
-    lint: row.lint ? (JSON.parse(row.lint) as LintResult) : null,
+    lint: (row.lint as LintResult | null) ?? null,
     note: row.note,
-    createdAt: row.created_at,
+    createdAt: toIso(row.created_at),
   };
 }
 
-export function getVersion(
+export async function getVersion(
   projectId: string,
   versionNumber: number,
-): VersionRecord | undefined {
-  const d = getDb();
-  const row = d
-    .prepare('SELECT * FROM versions WHERE project_id = ? AND version_number = ?')
-    .get(projectId, versionNumber) as Parameters<typeof rowToVersion>[0] | undefined;
-  return row ? rowToVersion(row) : undefined;
+): Promise<VersionRecord | undefined> {
+  const sql = await db();
+  const [row] = await sql`
+    SELECT * FROM versions
+    WHERE project_id = ${projectId} AND version_number = ${versionNumber}
+  `;
+  return row ? rowToVersion(row as Parameters<typeof rowToVersion>[0]) : undefined;
 }
 
-export function getLatestVersion(projectId: string): VersionRecord | undefined {
-  const d = getDb();
-  const row = d
-    .prepare(
-      'SELECT * FROM versions WHERE project_id = ? ORDER BY version_number DESC LIMIT 1',
-    )
-    .get(projectId) as Parameters<typeof rowToVersion>[0] | undefined;
-  return row ? rowToVersion(row) : undefined;
+export async function getLatestVersion(projectId: string): Promise<VersionRecord | undefined> {
+  const sql = await db();
+  const [row] = await sql`
+    SELECT * FROM versions WHERE project_id = ${projectId}
+    ORDER BY version_number DESC LIMIT 1
+  `;
+  return row ? rowToVersion(row as Parameters<typeof rowToVersion>[0]) : undefined;
 }
 
-export function deleteProject(projectId: string): boolean {
-  const d = getDb();
-  const info = d.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
-  return info.changes > 0;
+export async function deleteProject(projectId: string): Promise<boolean> {
+  const sql = await db();
+  const result = await sql`DELETE FROM projects WHERE id = ${projectId}`;
+  return result.count > 0;
 }
 
 export interface UsagePerModel {
@@ -389,33 +352,26 @@ export interface UsageReport {
  * por IA (as 'frozen' nao tem tokens) e estima o custo em USD. Custo e
  * ESTIMATIVA baseada em precos de lista (ver pricing.ts).
  */
-export function getUsageReport(): UsageReport {
-  const d = getDb();
-  const rows = d
-    .prepare(
-      `SELECT model,
-              COUNT(*)              AS calls,
-              SUM(input_tokens)     AS input_tokens,
-              SUM(output_tokens)    AS output_tokens
-       FROM versions
-       WHERE input_tokens IS NOT NULL AND model IS NOT NULL
-       GROUP BY model`,
-    )
-    .all() as Array<{
-    model: string;
-    calls: number;
-    input_tokens: number | null;
-    output_tokens: number | null;
-  }>;
+export async function getUsageReport(): Promise<UsageReport> {
+  const sql = await db();
+  const rows = await sql`
+    SELECT model,
+           COUNT(*)::int                     AS calls,
+           COALESCE(SUM(input_tokens), 0)::bigint  AS input_tokens,
+           COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+    FROM versions
+    WHERE input_tokens IS NOT NULL AND model IS NOT NULL
+    GROUP BY model
+  `;
 
   const perModel: UsagePerModel[] = rows.map((r) => {
-    const inputTokens = r.input_tokens ?? 0;
-    const outputTokens = r.output_tokens ?? 0;
+    const inputTokens = Number(r.input_tokens);
+    const outputTokens = Number(r.output_tokens);
     const cost = estimateCost(r.model, inputTokens, outputTokens);
     return {
       model: r.model,
       label: priceLabel(r.model),
-      calls: r.calls,
+      calls: Number(r.calls),
       inputTokens,
       outputTokens,
       costUsd: cost.totalCost,

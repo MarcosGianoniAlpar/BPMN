@@ -1,135 +1,104 @@
-# Handoff — continuar o BPMN Pipeline (colar no chat de amanhã)
+# Handoff — continuar o BPMN Pipeline (colar no novo chat)
 
-> Cole este documento inteiro no início da conversa de amanhã. Ele dá o contexto
+> Cole este documento inteiro no início da próxima conversa. Ele dá o contexto
 > pra retomar sem reler tudo.
 
 ## Contexto rápido
 
-Projeto em `c:\Users\Micro\Documents\Alpar projetos\BPMN` (`bpmn-pipeline`):
-pipeline que extrai um `ProcessSpec` (JSON com evidência) de documentos via LLM e
-compila **BPMN 2.0** de forma determinística. Node/TypeScript, um único runtime.
-Tem CLI (`npm run dev -- <arquivo>`) e interface web (`npm run web`,
-http://localhost:3000). **Fonte da verdade = `ProcessSpec`** (Opção A): edição é
-estrutural; edição livre de geometria só ao "Congelar versão".
+Projeto em `c:\Users\Micro\Documents\Alpar projetos\BPMN` (`bpmn-pipeline`,
+repo `github.com/pedrofamaral/BPMN`): pipeline que extrai um `ProcessSpec` (JSON
+com evidência) de documentos via LLM e compila **BPMN 2.0** de forma
+determinística. Node/TypeScript. **Fonte da verdade = `ProcessSpec`** (Opção A):
+edição é estrutural; edição livre de geometria só ao "Congelar versão".
 
-## O que já está pronto (Fase 2 completa + extras)
+**Decisão de deploy:** vai para o **Vercel** (restrição de trabalho), apesar do
+fit ruim (é um servidor contínuo + chamadas de IA de ~1 min). Por isso a migração
+em 3 frentes abaixo.
 
-Tudo com `typecheck`/`lint`/`build` limpos.
+## O que já está pronto
 
-- Ingestão `.pdf`/`.docx` (`src/documentLoader.ts`) + upload no servidor.
-- `bpmnlint` no pipeline (`src/lintBpmn.ts`).
-- Harness de avaliação (`src/eval/`, `npm run eval [-- --cached]`).
-- Persistência SQLite (`src/store.ts`, `node:sqlite`): projetos → versões
-  (generated/refined/frozen). Banco em `data/bpmn.db`.
-- Edição no bpmn-js **Modeler** + "Congelar versão" + export `.bpmn`/SVG/PNG.
-- **Raias/pools desenhados** (`src/laneLayout.ts`) — gera a geometria (DI) própria
-  quando o `ProcessSpec` tem lanes.
-- **Relatório de uso/custo** (`src/pricing.ts` + painel "Uso & custo" na home):
-  tokens e custo estimado (US$) por modelo.
-- **Docker** escrito (`Dockerfile`, `docker-compose.yml`, `.dockerignore`) — mas
-  a imagem **ainda não foi buildada** (validei só o `node dist/server.js`, que é
-  o que o container roda).
+Tudo com `typecheck`/`lint`/`build` limpos, no GitHub.
 
-## Tarefas de amanhã, em ordem
+- Fase 2 completa: ingestão `.pdf`/`.docx`, `bpmnlint` no pipeline, evals
+  (`npm run eval`), edição no Modeler + "Congelar versão", **raias/pools
+  desenhados** (`src/laneLayout.ts`), export `.bpmn`/SVG/PNG.
+- Relatório de **uso/custo** (`src/pricing.ts` + painel na home).
+- **✅ Frente 1 do Vercel — banco migrado para Supabase (Postgres):**
+  `src/store.ts` reescrito com a lib `postgres`, conexão via `DATABASE_URL`
+  (pooler Transaction do Supabase, porta 6543, `prepare:false`, `ssl:'require'`),
+  schema auto-criado on-connect. Todas as funções viraram `async`; `server.ts`
+  ajustado. **Testado e validado** (smoke test + app real gravando no Supabase).
 
-### 1. Validar o visual no navegador (FAZER PRIMEIRO)
+## O que falta — Deploy no Vercel
 
-```bash
-npm run web
-```
-Abrir http://localhost:3000, gerar um processo e conferir:
-- **Raias/pools**: gerar um processo com departamentos (ex.: Solicitante / Gestor
-  / Financeiro) e ver se as faixas saem limpas, nós na raia certa, fluxo da
-  esquerda pra direita. Se destoar, ajustar constantes em `src/laneLayout.ts`
-  (`COL_W`, `LANE_H`, etc.).
-- **Edição + Congelar**: mexer no diagrama no Modeler → "Congelar versão" →
-  "Novo documento" → reabrir o processo salvo e confirmar que voltou igual.
-- **Export**: baixar `.bpmn`, SVG e PNG e conferir.
+### Frente 2 — Servidor → funções serverless (o trabalho principal)
 
-### 2. NOVA TAREFA — colorir o BPMN (hoje sai preto e branco)
+O `src/server.ts` é um `http.createServer` contínuo; o Vercel **não roda isso**.
+Precisa:
+- Criar funções em **`api/`** (uma por rota): `api/generate.ts`, `api/refine.ts`,
+  `api/extract-text.ts`, `api/usage.ts`, `api/projects/[...].ts`,
+  `api/projects/[id]/freeze.ts`. Reaproveitam `orchestrator.ts` e `store.ts`
+  (que já estão prontos e async).
+- **Empacotar os assets do bpmn-js dentro de `public/`** — hoje o servidor os
+  serve de `node_modules/bpmn-js/dist` (`/vendor/bpmn-modeler.js` e
+  `/vendor/assets/*`), que não existe no estático do Vercel. Copiar o
+  `bpmn-modeler.production.min.js` e a pasta `assets/` para `public/vendor/` (via
+  script de build) e ajustar os caminhos no `public/index.html`.
+- `vercel.json` com a config de build/rotas.
+- **Streaming + `maxDuration`**: `/api/generate` e `/api/refine` usam streaming
+  NDJSON e levam ~1 min — configurar `export const maxDuration = 300` (ou o teto
+  do plano) e confirmar que o streaming funciona na função serverless.
+- **Manter o `server.ts` para dev local** (`npm run web`) — as funções `api/`
+  são só para o Vercel. As duas camadas compartilham `store`/`orchestrator`.
 
-**Objetivo:** o diagrama gerado deve sair **colorido por tipo de elemento**, com
-uma paleta alinhada à marca Alpar (o app já usa azul `#124e80`, teal `#17a99b`,
-amber `#b7791f` no CSS — ver `public/styles.css`).
+### Frente 3 — Plano Vercel Pro (timeouts)
 
-**Onde a cor precisa entrar (decidir a abordagem no início):**
-- **Preferência: colorir na DI gerada no servidor** — assim o `.bpmn` exportado já
-  sai colorido (importante pro Marcos abrir em outro lugar) e persiste no banco.
-  bpmn-js lê cores da DI via atributos `bioc:fill` / `bioc:stroke` (namespace
-  bpmn.io) OU `color:background-color` / `color:border-color` (extensão OMG) nos
-  `<bpmndi:BPMNShape>` / `<bpmndi:BPMNEdge>`.
-  - Caminho **com raias**: adicionar fill/stroke por tipo ao criar cada
-    `bpmndi:BPMNShape` em `src/laneLayout.ts`.
-  - Caminho **sem raias** (`bpmn-auto-layout`): o layout gera a DI sem cor —
-    fazer um pós-processamento que percorre o XML/moddle e injeta a cor por
-    elemento (dá pra mapear o tipo via `spec.nodes`). Ver `src/layout.ts` /
-    `src/orchestrator.ts`.
-- **Alternativa mais simples (mas não persiste no export):** colorir no cliente
-  após `importXML`, usando `modeling.setColor(elements, { fill, stroke })` do
-  bpmn-js Modeler, percorrendo o `elementRegistry` por tipo. Funciona no viewer e
-  no modeler, mas o `.bpmn` baixado sai sem cor a menos que se re-exporte depois
-  de colorir. Se for por esse caminho, colorir ANTES de `saveXML`.
+A extração leva ~1 min. Hobby corta em ~60s; **Pro** permite `maxDuration` até
+300s. Provavelmente exige o plano **Pro** do Vercel. (O Supabase pode ficar no
+**free** — NANO/0.5 GB dá conta.)
 
-**Paleta sugerida (ajustar ao gosto):**
-| Elemento | Preenchimento | Borda |
-|---|---|---|
-| start_event | verde claro | verde |
-| end_event | vermelho claro | vermelho |
-| user_task | azul claro (`#e7eff5`) | `#124e80` |
-| service_task | teal claro (`#e3f4f1`) | `#17a99b` |
-| exclusive_gateway | amarelo claro (`#fdf6e3`) | `#b7791f` |
-| lanes / pool | tons bem claros, alternados | cinza |
+### Configuração no Vercel (você faz na conta)
 
-**Cuidado:** manter o resultado válido pro `bpmnlint` e pro bpmn-js (a cor é só
-DI, não muda a semântica). Testar nos dois caminhos (com e sem raias) e conferir
-que o export continua abrindo em https://demo.bpmn.io.
+- New Project → conectar o repo `pedrofamaral/BPMN`.
+- **Environment Variables:** `DATABASE_URL` (a mesma do `.env`, pooler 6543),
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `MAX_OUTPUT_TOKENS`.
+- Plano **Pro** pelos timeouts.
 
-### 3. Subir o Docker (validar o container)
+## Outras pendências (independentes do deploy)
 
-```bash
-docker compose up -d --build
-```
-Abrir http://localhost:3000, gerar um processo, e testar persistência:
-```bash
-docker compose down && docker compose up -d
-```
-Se os "Processos salvos" e o "Uso & custo" continuarem lá, o volume `./data`
-está certo. Se a imagem não buildar, quase sempre é `node:sqlite` (a base tem que
-ser Node ≥ 22.5 — está em `node:24-*`).
-
-### 4. Evals com documentos reais do Marcos
-
-Pegar 3–5 `.pdf`/`.docx` reais, gerar, revisar os `ProcessSpec`, salvar os
-gabaritos em `evaluations/expected/`, e rodar `npm run eval`. Cruzar com o painel
-de custo pra decidir **Fable × Sonnet** de produção com dado, não achismo.
-
-### 5. (Depois) Message flows entre pools
-
-Único pedaço de raias/pools que ficou pra depois: desenhar as setas ligando o
-pool interno aos externos (caixa-preta) em `src/laneLayout.ts`.
+Podem ser feitas antes ou depois do Vercel:
+- **Colorir o BPMN** (hoje sai preto e branco) — colorir na DI gerada no servidor
+  (`src/laneLayout.ts` para o caminho com raias; pós-processar o XML do
+  `bpmn-auto-layout` para o caminho sem raias). Paleta alinhada ao CSS do app
+  (azul `#124e80`, teal `#17a99b`, amber `#b7791f`). Vantagem de fazer na DI: o
+  `.bpmn` exportado já sai colorido.
+- **Validar o visual** no navegador: raias limpas, edição+congelar, export PNG.
+- **Evals com documentos reais** do Marcos (`.pdf`/`.docx`), salvar gabaritos em
+  `evaluations/expected/`, rodar `npm run eval`, decidir Fable × Sonnet com o
+  painel de custo.
+- **Message flows entre pools** no `src/laneLayout.ts` (setas interno ↔ externo).
 
 ## Comandos úteis
 
 ```bash
-npm run web                 # interface visual (validação)
-npm run dev -- <arquivo>    # pipeline via CLI (.txt/.md/.pdf/.docx)
-npm run eval [-- --cached]  # avaliação de qualidade
+npm run web                 # app local (usa o Supabase via DATABASE_URL do .env)
+npm run dev -- <arquivo>    # CLI (gera arquivos, NÃO salva no banco)
+npm run eval                # avaliação de qualidade
 npm run typecheck && npm run lint && npm run build
-docker compose up -d --build   # sobe o container
 ```
 
 ## Mapa dos arquivos-chave
 
-- `src/orchestrator.ts` — encadeia extração → validação → compilação → layout → lint
-- `src/laneLayout.ts` — **layout com raias/pools (onde colorir com raias)**
-- `src/layout.ts` — bpmn-auto-layout (caminho sem raias)
-- `src/compiler.ts` — ProcessSpec → BPMN (sem raias)
-- `src/store.ts` — persistência (projetos/versões/uso)
+- `src/server.ts` — servidor HTTP atual (vira base das funções `api/` na Frente 2)
+- `src/store.ts` — **persistência Supabase/Postgres (pronto, async)**
+- `src/orchestrator.ts` — pipeline (extração→validação→compilação→layout→lint)
+- `src/laneLayout.ts` — layout com raias/pools (onde colorir com raias)
 - `src/pricing.ts` — preços por modelo (custo)
-- `public/app.js` / `index.html` / `styles.css` — frontend (Modeler, cores no cliente ficariam aqui)
-- `Dockerfile` / `docker-compose.yml` — container
+- `public/` — frontend (index.html, app.js, styles.css); bpmn-js vem de node_modules
+- `.env` — `DATABASE_URL`, `ANTHROPIC_API_KEY`, etc. (local, gitignored)
 
-## Lembrete
+## Lembretes
 
-- Rotacionar a `ANTHROPIC_API_KEY` se ela já circulou em chat.
-- Não migrar pra Supabase agora — só quando precisar de login/multiusuário.
+- **Rotacionar a `ANTHROPIC_API_KEY`** (circulou em chat). O `.env` é gitignored.
+- Repo **privado**.
+- Não migrar de volta pra SQLite — o Supabase é o banco daqui pra frente.
