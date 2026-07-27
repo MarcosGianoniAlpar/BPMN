@@ -5,7 +5,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/**/*.ts": {
-      "includeFiles": "node_modules/@napi-rs/canvas*/**"
+      "includeFiles": "node_modules/{@napi-rs/canvas*/**,pdfjs-dist/legacy/build/**,pdfjs-dist/standard_fonts/**}"
     }
   }
 }
