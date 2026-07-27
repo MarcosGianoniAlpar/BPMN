@@ -6,6 +6,7 @@ import { loadConfig } from './config.js';
 import { isSupportedFilename } from './documentLoader.js';
 import {
   sendJson,
+  decodeFilename,
   runGenerate,
   runRefine,
   runExtractText,
@@ -93,7 +94,7 @@ async function readBodyBuffer(
  */
 async function handleExtractText(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const rawName = req.headers['x-filename'];
-  const filename = (Array.isArray(rawName) ? rawName[0] : rawName) ?? '';
+  const filename = decodeFilename((Array.isArray(rawName) ? rawName[0] : rawName) ?? '');
   if (!filename || !isSupportedFilename(filename)) {
     return sendJson(res, 400, { error: 'Nome de arquivo ausente ou tipo nao suportado.' });
   }

@@ -355,7 +355,9 @@ async function readAndGenerate(file) {
   try {
     const res = await fetch('/api/extract-text', {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream', 'x-filename': file.name },
+      // Headers HTTP so aceitam ISO-8859-1: codifica o nome (acentos, espacos)
+      // e o servidor decodifica com decodeURIComponent.
+      headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) },
       body: file,
     });
     const data = await res.json().catch(() => ({ error: 'Resposta inválida do servidor.' }));

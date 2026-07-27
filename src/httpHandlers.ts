@@ -27,6 +27,19 @@ import {
 
 // ---- Respostas ----
 
+/**
+ * Decodifica o nome do arquivo vindo do header `x-filename`. O cliente usa
+ * `encodeURIComponent` porque headers HTTP so aceitam ISO-8859-1 (acentos e
+ * espacos quebrariam o fetch). Se nao estiver codificado, devolve como veio.
+ */
+export function decodeFilename(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });

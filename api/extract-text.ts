@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { isSupportedFilename } from '../dist/documentLoader.js';
-import { sendJson, runExtractText } from '../dist/httpHandlers.js';
+import { sendJson, decodeFilename, runExtractText } from '../dist/httpHandlers.js';
 
 // Parsing de PDF/DOCX grande pode demorar; folga sobre o default.
 export const maxDuration = 60;
@@ -12,7 +12,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   const rawName = req.headers['x-filename'];
-  const filename = (Array.isArray(rawName) ? rawName[0] : rawName) ?? '';
+  const filename = decodeFilename((Array.isArray(rawName) ? rawName[0] : rawName) ?? '');
   if (!filename || !isSupportedFilename(filename)) {
     sendJson(res, 400, { error: 'Nome de arquivo ausente ou tipo nao suportado.' });
     return;
