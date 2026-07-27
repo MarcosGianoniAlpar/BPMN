@@ -6,6 +6,7 @@ import { validateProcessSpec, type ValidationIssue } from './validate.js';
 import { compileToBpmn } from './compiler.js';
 import { applyLayout } from './layout.js';
 import { compileAndLayoutWithLanes } from './laneLayout.js';
+import { colorizeBpmn } from './bpmnColor.js';
 import { lintBpmn, type LintResult } from './lintBpmn.js';
 
 export class ProcessSpecValidationError extends Error {
@@ -82,6 +83,9 @@ async function buildDiagram(
   } else {
     layoutXml = await applyLayout(semanticXml).then((r) => r.xml);
   }
+  // Colore a DI com a paleta da Alpar (por tipo de elemento). Best-effort: nao
+  // derruba a geracao se falhar. A cor persiste no .bpmn/SVG exportado.
+  layoutXml = await colorizeBpmn(layoutXml);
   const shapes = (layoutXml.match(/<bpmndi:BPMNShape/g) ?? []).length;
   const edges = (layoutXml.match(/<bpmndi:BPMNEdge/g) ?? []).length;
   onProgress({
