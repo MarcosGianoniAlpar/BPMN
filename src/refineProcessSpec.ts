@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
-import { extractJson } from './extractProcessSpec.js';
+import { PROCESS_SPEC_TOOL, readSpecFromMessage } from './extractProcessSpec.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/refine-process.md');
@@ -52,16 +52,13 @@ export async function refineProcessSpec(
     model: config.model,
     max_tokens: config.maxOutputTokens,
     system,
+    tools: [PROCESS_SPEC_TOOL],
+    tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
     messages: [{ role: 'user', content: userContent }],
   });
 
-  const text = message.content
-    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
-
   return {
-    raw: extractJson(text),
+    raw: readSpecFromMessage(message),
     usage: {
       inputTokens: message.usage.input_tokens,
       outputTokens: message.usage.output_tokens,
