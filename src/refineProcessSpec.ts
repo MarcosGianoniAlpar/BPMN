@@ -52,6 +52,9 @@ export async function refineProcessSpec(
     model: config.model,
     max_tokens: config.maxOutputTokens,
     system,
+    // Ver a nota em transcriptToMinutes.ts: thinking ligado por padrao no
+    // Sonnet 5 dividiria o `max_tokens` com o ProcessSpec revisado.
+    thinking: { type: 'disabled' },
     tools: [PROCESS_SPEC_TOOL],
     tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
     messages: [{ role: 'user', content: userContent }],

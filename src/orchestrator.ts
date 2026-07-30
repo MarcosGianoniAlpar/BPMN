@@ -1,6 +1,9 @@
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
+import type { MeetingMinutes } from './types/meeting-minutes.js';
 import { extractProcessSpec } from './extractProcessSpec.js';
+import { transcriptToMinutes } from './transcriptToMinutes.js';
+import { renderMinutesMarkdown } from './minutesMarkdown.js';
 import { refineProcessSpec, type ClarificationAnswer } from './refineProcessSpec.js';
 import { validateProcessSpec, type ValidationIssue } from './validate.js';
 import { compileToBpmn } from './compiler.js';
@@ -28,7 +31,14 @@ export interface PipelineResult {
   usage: { inputTokens: number; outputTokens: number };
 }
 
-export type PipelineStage = 'extract' | 'validate' | 'compile' | 'layout' | 'lint';
+export type PipelineStage =
+  | 'minutes'
+  | 'render'
+  | 'extract'
+  | 'validate'
+  | 'compile'
+  | 'layout'
+  | 'lint';
 
 export interface ProgressUpdate {
   stage: PipelineStage;
@@ -127,6 +137,46 @@ export async function runPipeline(
     detail: `${usage.inputTokens}+${usage.outputTokens} tokens`,
   });
   return buildDiagram(raw, usage, onProgress);
+}
+
+export interface MinutesResult {
+  minutes: MeetingMinutes;
+  /** A ata renderizada em Markdown — e este texto que alimenta o diagrama. */
+  markdown: string;
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Modo transcricao, passo 1: transcricao crua -> ata estruturada -> Markdown.
+ *
+ * Deliberadamente NAO encadeia a geracao do diagrama. Sao duas chamadas de IA
+ * separadas para (a) o especialista revisar/corrigir a ata antes de gastar a
+ * segunda chamada e (b) cada invocacao caber no teto de 60s do Vercel Hobby.
+ * O diagrama sai depois, rodando `runPipeline` sobre o Markdown da ata.
+ */
+export async function runMinutesFromTranscript(
+  transcriptText: string,
+  config: AppConfig,
+  onProgress: ProgressFn = () => {},
+): Promise<MinutesResult> {
+  onProgress({ stage: 'minutes', status: 'start' });
+  const { minutes, usage } = await transcriptToMinutes(transcriptText, config);
+  const steps = minutes.process_flow?.steps?.length ?? 0;
+  onProgress({
+    stage: 'minutes',
+    status: 'done',
+    detail: `${usage.inputTokens}+${usage.outputTokens} tokens · ${minutes.topics?.length ?? 0} tópico(s), ${steps} etapa(s) de fluxo`,
+  });
+
+  onProgress({ stage: 'render', status: 'start' });
+  const markdown = renderMinutesMarkdown(minutes);
+  onProgress({
+    stage: 'render',
+    status: 'done',
+    detail: `ata de ${markdown.split('\n').length} linhas gerada por código`,
+  });
+
+  return { minutes, markdown, usage };
 }
 
 /**

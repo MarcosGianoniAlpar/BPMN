@@ -16,6 +16,7 @@ const addFormats = addFormatsDefault as unknown as (ajv: unknown) => void;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(__dirname, '../schemas/process-spec.schema.json');
+const minutesSchemaPath = resolve(__dirname, '../schemas/meeting-minutes.schema.json');
 
 export interface ValidationIssue {
   code: string;
@@ -39,6 +40,62 @@ function getValidator(): ValidateFunction {
   const schema = JSON.parse(readFileSync(schemaPath, 'utf-8'));
   cachedValidator = ajv.compile(schema);
   return cachedValidator;
+}
+
+let cachedMinutesValidator: ValidateFunction | undefined;
+
+function getMinutesValidator(): ValidateFunction {
+  if (cachedMinutesValidator) return cachedMinutesValidator;
+  const ajv = new Ajv({ allErrors: true, strict: false, removeAdditional: true });
+  addFormats(ajv);
+  const schema = JSON.parse(readFileSync(minutesSchemaPath, 'utf-8'));
+  cachedMinutesValidator = ajv.compile(schema);
+  return cachedMinutesValidator;
+}
+
+/**
+ * Valida a ata que veio da IA contra o schema.
+ *
+ * Existe porque a ata falhava em SILENCIO: se a IA devolvia um objeto com forma
+ * diferente da esperada, nada quebrava — o renderizador simplesmente pulava as
+ * secoes e o usuario recebia uma ata quase vazia, sem saber por que. Aqui o
+ * problema vira erro explicito.
+ */
+export function validateMeetingMinutes(minutes: unknown): ValidationResult {
+  const errors: ValidationIssue[] = [];
+  const validate = getMinutesValidator();
+
+  if (!validate(minutes)) {
+    for (const err of validate.errors ?? []) {
+      errors.push({
+        code: 'SCHEMA',
+        message: `${err.instancePath || '/'} ${err.message ?? 'invalido'}`,
+        path: err.instancePath,
+      });
+    }
+    return { valid: false, errors };
+  }
+
+  // Guarda semantica: uma reuniao de verdade nao produz ata vazia. Se veio sem
+  // topico E sem etapa de fluxo, a extracao falhou — melhor dizer isso do que
+  // entregar um documento em branco como se fosse resultado.
+  const m = minutes as {
+    topics?: unknown[];
+    process_flow?: { steps?: unknown[] };
+    participants?: unknown[];
+  };
+  const topics = m.topics?.length ?? 0;
+  const steps = m.process_flow?.steps?.length ?? 0;
+  if (topics === 0 && steps === 0) {
+    errors.push({
+      code: 'ATA_VAZIA',
+      message:
+        'A IA devolveu uma ata sem nenhum tópico e sem nenhuma etapa de fluxo ' +
+        `(${m.participants?.length ?? 0} participante(s)). A extração falhou.`,
+    });
+  }
+
+  return { valid: errors.length === 0, errors };
 }
 
 /**

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
+import { AiCallError } from './aiError.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/extract-process.md');
@@ -53,10 +54,17 @@ export function extractJson(text: string): unknown {
  * lanca um erro claro (em vez do JSON malformado que o usuario via antes).
  */
 export function readSpecFromMessage(message: Anthropic.Message): unknown {
+  // Os erros abaixo levam o `usage` junto: a chamada falhou, mas foi cobrada.
+  const usage = {
+    inputTokens: message.usage.input_tokens,
+    outputTokens: message.usage.output_tokens,
+  };
+
   if (message.stop_reason === 'max_tokens') {
-    throw new Error(
+    throw new AiCallError(
       'A resposta da IA foi cortada por limite de tokens (max_tokens). ' +
         'Aumente MAX_OUTPUT_TOKENS ou reduza/enxugue o documento.',
+      usage,
     );
   }
 
@@ -72,7 +80,7 @@ export function readSpecFromMessage(message: Anthropic.Message): unknown {
     .map((b) => b.text)
     .join('\n');
   if (!text.trim()) {
-    throw new Error('A IA nao retornou o ProcessSpec (nenhuma ferramenta chamada).');
+    throw new AiCallError('A IA nao retornou o ProcessSpec (nenhuma ferramenta chamada).', usage);
   }
   return extractJson(text);
 }
@@ -97,6 +105,9 @@ export async function extractProcessSpec(
     model: config.model,
     max_tokens: config.maxOutputTokens,
     system: loadSystemPrompt(),
+    // Ver a nota em transcriptToMinutes.ts: no Sonnet 5 o thinking vem LIGADO
+    // quando o campo e omitido, e divide o `max_tokens` com a resposta.
+    thinking: { type: 'disabled' },
     tools: [PROCESS_SPEC_TOOL],
     tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
     messages: [

@@ -1,8 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { loadConfig } from '../dist/config.js';
-import { rejectRequest, runGenerate } from '../dist/httpHandlers.js';
+import { rejectRequest, runMinutes } from '../dist/httpHandlers.js';
 
-// A extracao (IA) leva ~1 min. Exige plano Vercel Pro (Hobby capa em 60s).
+// Transcricao -> ata e uma unica chamada de IA (~1 min em transcricoes longas).
+// Exige plano Vercel Pro para usar os 300s; no Hobby o teto real e 60s.
 export const maxDuration = 300;
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -14,8 +15,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const payload = (req.body ?? {}) as { text?: string; filename?: string };
   const text = typeof payload.text === 'string' ? payload.text.trim() : '';
   if (!text) {
-    rejectRequest(res, 'POST', '/api/generate', 400, 'Documento vazio ou invalido.');
+    rejectRequest(res, 'POST', '/api/minutes', 400, 'Transcricao vazia ou invalida.');
     return;
   }
-  await runGenerate(res, config, text, payload.filename ?? 'documento');
+  await runMinutes(res, config, text, payload.filename ?? 'transcricao');
 }

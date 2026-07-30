@@ -104,6 +104,20 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_versions_project
     ON versions(project_id, version_number);
+  -- Chamadas de IA que NAO viram uma versao de projeto: a transcricao -> ata do
+  -- modo transcricao, e QUALQUER chamada que falhou depois de queimar tokens
+  -- (max_tokens, por exemplo). Sem elas o painel de custo subestimaria o gasto —
+  -- e erraria justamente nos casos caros, que sao os que estouram o limite.
+  CREATE TABLE IF NOT EXISTS ai_calls (
+    id uuid PRIMARY KEY,
+    kind text NOT NULL,
+    model text NOT NULL,
+    input_tokens integer NOT NULL,
+    output_tokens integer NOT NULL,
+    source_filename text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE ai_calls ADD COLUMN IF NOT EXISTS failed boolean NOT NULL DEFAULT false;
 `;
 
 let schemaReady: Promise<void> | undefined;
@@ -327,6 +341,33 @@ export async function deleteProject(projectId: string): Promise<boolean> {
   return result.count > 0;
 }
 
+/** Tipos de chamada de IA avulsa (sem versao associada). */
+export type AiCallKind = 'minutes' | 'generate' | 'refine';
+
+/**
+ * Registra uma chamada de IA que nao gera versao de projeto, para que ela
+ * apareca no relatorio de uso/custo. A key e da empresa: nenhuma chamada pode
+ * ficar fora da conta — inclusive as que FALHARAM depois de gastar tokens
+ * (`failed: true`), que sao cobradas do mesmo jeito.
+ */
+export async function recordAiCall(input: {
+  kind: AiCallKind;
+  model: string;
+  usage: { inputTokens: number; outputTokens: number };
+  sourceFilename?: string | null;
+  failed?: boolean;
+}): Promise<void> {
+  const sql = await db();
+  await sql`
+    INSERT INTO ai_calls (id, kind, model, input_tokens, output_tokens, source_filename, failed)
+    VALUES (
+      ${randomUUID()}, ${input.kind}, ${input.model},
+      ${input.usage.inputTokens}, ${input.usage.outputTokens},
+      ${input.sourceFilename ?? null}, ${input.failed ?? false}
+    )
+  `;
+}
+
 export interface UsagePerModel {
   model: string;
   label: string;
@@ -348,19 +389,26 @@ export interface UsageReport {
 }
 
 /**
- * Relatorio de uso/custo: agrega tokens por modelo em todas as versoes geradas
- * por IA (as 'frozen' nao tem tokens) e estima o custo em USD. Custo e
- * ESTIMATIVA baseada em precos de lista (ver pricing.ts).
+ * Relatorio de uso/custo: agrega tokens por modelo em TODAS as chamadas de IA —
+ * as versoes geradas/revisadas (as 'frozen' nao tem tokens) mais as chamadas
+ * avulsas de `ai_calls` (ex.: transcricao -> ata). Custo e ESTIMATIVA baseada em
+ * precos de lista (ver pricing.ts).
  */
 export async function getUsageReport(): Promise<UsageReport> {
   const sql = await db();
   const rows = await sql`
+    WITH todas AS (
+      SELECT model, input_tokens, output_tokens
+      FROM versions
+      WHERE input_tokens IS NOT NULL AND model IS NOT NULL
+      UNION ALL
+      SELECT model, input_tokens, output_tokens FROM ai_calls
+    )
     SELECT model,
-           COUNT(*)::int                     AS calls,
+           COUNT(*)::int                           AS calls,
            COALESCE(SUM(input_tokens), 0)::bigint  AS input_tokens,
            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
-    FROM versions
-    WHERE input_tokens IS NOT NULL AND model IS NOT NULL
+    FROM todas
     GROUP BY model
   `;
 

@@ -6,9 +6,11 @@ import { loadConfig } from './config.js';
 import { isSupportedFilename } from './documentLoader.js';
 import {
   sendJson,
+  rejectRequest,
   decodeFilename,
   runGenerate,
   runRefine,
+  runMinutes,
   runExtractText,
   sendUsage,
   handleProjectsApi,
@@ -96,14 +98,14 @@ async function handleExtractText(req: IncomingMessage, res: ServerResponse): Pro
   const rawName = req.headers['x-filename'];
   const filename = decodeFilename((Array.isArray(rawName) ? rawName[0] : rawName) ?? '');
   if (!filename || !isSupportedFilename(filename)) {
-    return sendJson(res, 400, { error: 'Nome de arquivo ausente ou tipo nao suportado.' });
+    return rejectRequest(res, 'POST', '/api/extract-text', 400, 'Nome de arquivo ausente ou tipo nao suportado.');
   }
 
   let buffer: Buffer;
   try {
     buffer = await readBodyBuffer(req);
   } catch (err) {
-    return sendJson(res, 413, { error: err instanceof Error ? err.message : 'Upload invalido.' });
+    return rejectRequest(res, 'POST', '/api/extract-text', 413, err instanceof Error ? err.message : 'Upload invalido.');
   }
 
   return runExtractText(res, buffer, filename);
@@ -115,15 +117,32 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', '/api/generate', 400, 'JSON invalido.');
   }
 
   const text = typeof payload.text === 'string' ? payload.text.trim() : '';
   if (!text) {
-    return sendJson(res, 400, { error: 'Documento vazio ou invalido.' });
+    return rejectRequest(res, 'POST', '/api/generate', 400, 'Documento vazio ou invalido.');
   }
 
   return runGenerate(res, config, text, payload.filename ?? 'documento');
+}
+
+async function handleMinutes(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const config = loadConfig();
+  let payload: { text?: string; filename?: string };
+  try {
+    payload = JSON.parse(await readBody(req));
+  } catch {
+    return rejectRequest(res, 'POST', '/api/minutes', 400, 'JSON invalido.');
+  }
+
+  const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+  if (!text) {
+    return rejectRequest(res, 'POST', '/api/minutes', 400, 'Transcricao vazia ou invalida.');
+  }
+
+  return runMinutes(res, config, text, payload.filename ?? 'transcricao');
 }
 
 async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -138,14 +157,14 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', '/api/refine', 400, 'JSON invalido.');
   }
 
   const text = typeof payload.text === 'string' ? payload.text.trim() : '';
   const spec = payload.spec;
   const answers = Array.isArray(payload.answers) ? payload.answers : [];
   if (!text || !spec || answers.length === 0) {
-    return sendJson(res, 400, { error: 'Faltam texto, ProcessSpec ou respostas.' });
+    return rejectRequest(res, 'POST', '/api/refine', 400, 'Faltam texto, ProcessSpec ou respostas.');
   }
 
   return runRefine(res, config, {
@@ -166,7 +185,7 @@ async function handleFreeze(
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', `/api/projects/${projectId}/freeze`, 400, 'JSON invalido.');
   }
   return runFreeze(res, projectId, payload);
 }
@@ -194,6 +213,10 @@ const server = createServer((req, res) => {
   }
   if (method === 'POST' && url === '/api/refine') {
     guard(handleRefine(req, res));
+    return;
+  }
+  if (method === 'POST' && url === '/api/minutes') {
+    guard(handleMinutes(req, res));
     return;
   }
   // POST /api/projects/{id}/freeze

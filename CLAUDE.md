@@ -37,13 +37,19 @@ compila **BPMN 2.0** de forma determinística. Node/TypeScript, ESM (NodeNext).
 - **Dois caminhos de layout:** com raias → `src/laneLayout.ts` (geometria própria);
   sem raias → `src/compiler.ts` + `bpmn-auto-layout`. O orchestrator escolhe por
   `hasLanes`.
+- **Modo transcrição:** transcrição crua → **ata estruturada** (`MeetingMinutes`,
+  IA) → Markdown (determinístico) → pipeline normal. São **duas chamadas de IA
+  separadas** de propósito: o especialista revisa a ata antes da segunda, e cada
+  requisição cabe no teto de 60s do Vercel Hobby.
 
 ## Comandos úteis
 
 ```bash
-npm run web                 # app local (http://localhost:3000)
-npm run dev -- <arquivo>    # CLI — GASTA API (pedir ok antes)
-npm run eval                # avaliação — GASTA API (pedir ok antes)
+npm run web                             # app local (http://localhost:3000)
+npm run dev -- <arquivo>                # CLI — GASTA API (pedir ok antes)
+npm run dev -- <arquivo> --transcricao  # transcrição → ata → diagrama (2 chamadas)
+npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada)
+npm run eval                            # avaliação — GASTA API (pedir ok antes)
 npm run typecheck && npm run lint && npm run build
 npm run typecheck:vercel    # valida as funções serverless em api/
 ```
@@ -67,6 +73,10 @@ npm run typecheck:vercel    # valida as funções serverless em api/
 - `src/store.ts` — persistência Supabase/Postgres (async).
 - `src/laneLayout.ts` — layout com raias/pools.
 - `src/bpmnColor.ts` — colorização da DI com a paleta Alpar.
+- `src/transcriptToMinutes.ts` — transcrição → ata estruturada (IA, tool use).
+- `src/minutesMarkdown.ts` — ata estruturada → Markdown (determinístico).
+- `src/textCleanup.ts` — mojibake e caracteres invisíveis, antes de gastar tokens.
 - `public/` — frontend (index.html, app.js, styles.css); bpmn-js em `/vendor/*`.
-- `prompts/` — prompts da IA (extract-process.md, refine-process.md).
+- `prompts/` — prompts da IA (extract-process.md, refine-process.md,
+  transcript-to-minutes.md).
 - `docs/architecture.md` — arquitetura.

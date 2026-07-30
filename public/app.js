@@ -3,9 +3,9 @@
 
 const $ = (sel) => document.querySelector(sel);
 
-const dropzone = $('#dropzone');
+const home = $('#home');
 const workspace = $('#workspace');
-const fileInput = $('#file-input');
+const minutesView = $('#minutes-view');
 const loading = $('#loading');
 const stepsEl = $('#steps');
 const toast = $('#toast');
@@ -31,48 +31,104 @@ const state = {
   projectId: null,
   versionNumber: null,
   versionKind: null,
+  // 'doc'        = documento já organizado -> diagrama.
+  // 'transcript' = transcrição -> ata estruturada. A ata É a entrega; virar
+  //                diagrama depois é opcional (e custa outra chamada de IA).
+  mode: 'doc',
+  minutes: null,
+  minutesFilename: 'ata.md',
 };
 
-const projectsPanel = $('#projects-panel');
+// Etapas exibidas no overlay de progresso, por tipo de execução.
+const MINUTES_STAGES = ['minutes', 'render'];
+const DIAGRAM_STAGES = ['extract', 'validate', 'compile', 'layout', 'lint'];
+
 const projectsList = $('#projects-list');
-const usagePanel = $('#usage-panel');
+const projectsEmpty = $('#projects-empty');
+const usageSection = $('#usage-section');
 const versionBadge = $('#version-badge');
 
 const KIND_LABEL = { generated: 'gerada', refined: 'revisada', frozen: 'congelada' };
 
-// ---- Upload: clique e drag-and-drop ----
-fileInput.addEventListener('change', () => {
-  if (fileInput.files.length) readAndGenerate(fileInput.files[0]);
+// ---- Gaveta de histórico ----
+const history = $('#history');
+const historyBackdrop = $('#history-backdrop');
+const historyCount = $('#history-count');
+
+function openHistory() {
+  history.classList.add('open');
+  historyBackdrop.classList.add('open');
+  history.setAttribute('aria-hidden', 'false');
+  loadProjects(); // reabre sempre com a lista atual
+}
+
+function closeHistory() {
+  history.classList.remove('open');
+  historyBackdrop.classList.remove('open');
+  history.setAttribute('aria-hidden', 'true');
+}
+
+function toggleHistory() {
+  if (history.classList.contains('open')) closeHistory();
+  else openHistory();
+}
+
+$('#history-btn').addEventListener('click', toggleHistory);
+$('#history-close').addEventListener('click', closeHistory);
+historyBackdrop.addEventListener('click', closeHistory);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeHistory();
 });
 
-['dragenter', 'dragover'].forEach((evt) =>
-  dropzone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    dropzone.classList.add('dragging');
-  }),
-);
-['dragleave', 'drop'].forEach((evt) =>
-  dropzone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('dragging');
-  }),
-);
-dropzone.addEventListener('drop', (e) => {
-  const file = e.dataTransfer.files[0];
-  if (file) readAndGenerate(file);
+// ---- Portas de entrada: cada card tem seu upload e define o modo ----
+// Não há "modo ativo" guardado na tela: o modo é simplesmente o card em que o
+// arquivo entrou, então não dá para arrastar na porta errada sem perceber.
+const entryCards = document.querySelectorAll('.entry-card');
+const entryInputs = document.querySelectorAll('.entry-input');
+
+entryCards.forEach((card) => {
+  const mode = card.dataset.mode;
+  const input = card.querySelector('.entry-input');
+
+  input.addEventListener('change', () => {
+    if (input.files.length) start(mode, input.files[0]);
+  });
+
+  ['dragenter', 'dragover'].forEach((evt) =>
+    card.addEventListener(evt, (e) => {
+      e.preventDefault();
+      card.classList.add('dragging');
+    }),
+  );
+  ['dragleave', 'drop'].forEach((evt) =>
+    card.addEventListener(evt, (e) => {
+      e.preventDefault();
+      card.classList.remove('dragging');
+    }),
+  );
+  card.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files[0];
+    if (file) start(mode, file);
+  });
 });
+
+function start(mode, file) {
+  state.mode = mode;
+  readAndRun(file);
+}
 
 newBtn.addEventListener('click', goHome);
 
 function goHome() {
   workspace.hidden = true;
-  dropzone.hidden = false;
+  minutesView.hidden = true;
+  home.hidden = false;
   newBtn.hidden = true;
   dlBpmnBtn.hidden = true;
   dlSvgBtn.hidden = true;
   dlPngBtn.hidden = true;
   freezeBtn.hidden = true;
-  fileInput.value = '';
+  entryInputs.forEach((input) => (input.value = ''));
   state.projectId = null;
   state.versionNumber = null;
   loadProjects();
@@ -111,10 +167,10 @@ function fmtUsd(n) {
 
 function renderUsage(u) {
   if (!u || !u.perModel || u.perModel.length === 0) {
-    usagePanel.hidden = true;
+    usageSection.hidden = true;
     return;
   }
-  usagePanel.hidden = false;
+  usageSection.hidden = false;
   $('#usage-totals').innerHTML = [
     { k: 'Chamadas de IA', v: fmtInt(u.totalCalls) },
     { k: 'Tokens (entrada)', v: fmtInt(u.totalInputTokens) },
@@ -141,12 +197,14 @@ function renderUsage(u) {
 }
 
 function renderProjects(projects) {
+  historyCount.hidden = projects.length === 0;
+  historyCount.textContent = projects.length;
+  projectsEmpty.hidden = projects.length > 0;
+
   if (!projects.length) {
-    projectsPanel.hidden = true;
     projectsList.innerHTML = '';
     return;
   }
-  projectsPanel.hidden = false;
   projectsList.innerHTML = projects
     .map(
       (p) => `<li class="project-item" data-id="${escapeHtml(p.id)}">
@@ -334,7 +392,13 @@ freezeBtn.addEventListener('click', async () => {
 });
 
 // ---- Ler o arquivo e chamar a API ----
-async function readAndGenerate(file) {
+
+/** Despacha o texto lido conforme o modo escolhido na home. */
+function runWithText(text, filename) {
+  return state.mode === 'transcript' ? makeMinutes(text, filename) : generate(text, filename);
+}
+
+async function readAndRun(file) {
   const name = file.name.toLowerCase();
   if (!/\.(txt|md|markdown|pdf|docx)$/.test(name)) {
     showToast('Formato não suportado. Use .txt, .md, .pdf ou .docx.');
@@ -344,7 +408,7 @@ async function readAndGenerate(file) {
   // .txt/.md sao texto: leem no navegador (rapido, sem round-trip).
   if (/\.(txt|md|markdown)$/.test(name)) {
     const reader = new FileReader();
-    reader.onload = () => generate(reader.result, file.name);
+    reader.onload = () => runWithText(reader.result, file.name);
     reader.onerror = () => showToast('Não consegui ler o arquivo.');
     reader.readAsText(file, 'utf-8');
     return;
@@ -365,7 +429,7 @@ async function readAndGenerate(file) {
       showToast(data.error || 'Falha ao ler o documento.');
       return;
     }
-    await generate(data.text, file.name);
+    await runWithText(data.text, file.name);
   } catch (err) {
     showToast('Falha ao enviar o documento: ' + err.message);
   } finally {
@@ -373,8 +437,10 @@ async function readAndGenerate(file) {
   }
 }
 
-function resetSteps() {
+// Mostra só as etapas da execução em curso (ata x diagrama).
+function resetSteps(stages) {
   stepsEl.querySelectorAll('li').forEach((li) => {
+    li.hidden = !stages.includes(li.dataset.stage);
     li.classList.remove('active', 'done');
     li.querySelector('.t').textContent = '';
   });
@@ -393,9 +459,11 @@ function updateStep(msg) {
   }
 }
 
-// Executa uma etapa em streaming (geração ou revisão) e renderiza o resultado.
-async function runStream(url, body) {
-  resetSteps();
+// Executa uma etapa em streaming (ata, geração ou revisão) e entrega o
+// resultado a `onResult`. `stages`/`title` só controlam o overlay de progresso.
+async function runStream(url, body, { stages = DIAGRAM_STAGES, title = 'Gerando o diagrama', onResult } = {}) {
+  resetSteps(stages);
+  $('#loading-title').textContent = title;
   loading.hidden = false;
   const progressDone = [];
   try {
@@ -445,8 +513,7 @@ async function runStream(url, body) {
       return;
     }
     if (result) {
-      await render(result);
-      renderPipelineLog(progressDone);
+      await (onResult ? onResult(result, progressDone) : render(result));
     } else {
       showToast('Resposta incompleta do servidor.');
     }
@@ -457,11 +524,128 @@ async function runStream(url, body) {
   }
 }
 
+// Resultado de uma execução que produz diagrama (geração ou revisão).
+const diagramOptions = {
+  stages: DIAGRAM_STAGES,
+  title: 'Gerando o diagrama',
+  onResult: async (result, progressDone) => {
+    await render(result);
+    renderPipelineLog(progressDone);
+  },
+};
+
 async function generate(text, filename) {
   state.documentText = text;
   state.filename = (filename || 'processo').replace(/\.[^.]+$/, '');
-  await runStream('/api/generate', { text, filename });
+  await runStream('/api/generate', { text, filename }, diagramOptions);
 }
+
+// ---- Modo transcrição: a transcrição vira a ata estruturada (a entrega) ----
+async function makeMinutes(text, filename) {
+  await runStream('/api/minutes', { text, filename }, {
+    stages: MINUTES_STAGES,
+    title: 'Estruturando a ata',
+    onResult: (result) => showMinutes(result, filename),
+  });
+}
+
+function showMinutes(data, sourceFilename) {
+  state.minutes = data.minutes || null;
+  state.minutesFilename = data.suggestedFilename || 'ata.md';
+  home.hidden = true;
+  workspace.hidden = true;
+  closeHistory();
+  minutesView.hidden = false;
+  newBtn.hidden = false;
+
+  $('#minutes-md').value = data.markdown || '';
+  const title = (data.minutes && data.minutes.meeting && data.minutes.meeting.title) || sourceFilename;
+  $('#minutes-title').textContent = 'Ata estruturada — ' + title;
+
+  const tokens = (data.usage.inputTokens + data.usage.outputTokens).toLocaleString('pt-BR');
+  $('#minutes-usage').textContent = `esta ata: ${tokens} tokens`;
+
+  renderMinutesCards(data.minutes || {});
+}
+
+function card(title, bodyHtml, hint) {
+  return `<h3>${escapeHtml(title)}</h3>${hint ? `<p class="card-hint">${escapeHtml(hint)}</p>` : ''}${bodyHtml}`;
+}
+
+function renderMinutesCards(minutes) {
+  const flow = minutes.process_flow || {};
+  const steps = flow.steps || [];
+  const flowBox = $('#minutes-flow');
+  if (steps.length) {
+    const items = steps
+      .map((s) => {
+        const branches = (s.outcomes || [])
+          .map((o) => `<li class="branch">${escapeHtml(o)}</li>`)
+          .join('');
+        return `<li>
+          <span class="step-actor">${escapeHtml(s.actor || '—')}</span>
+          <span class="step-action">${escapeHtml(s.action || '')}</span>
+          ${branches ? `<ul class="branches">${branches}</ul>` : ''}
+        </li>`;
+      })
+      .join('');
+    flowBox.hidden = false;
+    flowBox.innerHTML = card(
+      `Fluxo detectado (${steps.length} etapa${steps.length > 1 ? 's' : ''})`,
+      `<ol class="flow-steps">${items}</ol>`,
+      'O trabalho que a reunião combinou, em ordem.',
+    );
+  } else {
+    flowBox.hidden = false;
+    flowBox.innerHTML = card(
+      'Fluxo detectado',
+      '<p class="empty">Nenhuma etapa de fluxo foi identificada — a reunião não descreveu um processo em ordem. A ata continua válida; só não há o que virar diagrama.</p>',
+    );
+  }
+
+  const counts = [
+    { k: 'Participantes', v: (minutes.participants || []).length },
+    { k: 'Tópicos', v: (minutes.topics || []).length },
+    { k: 'Decisões', v: (minutes.decisions || []).length },
+    { k: 'Ações', v: (minutes.action_items || []).length },
+  ];
+  $('#minutes-summary').innerHTML = card(
+    'Resumo da ata',
+    `<div class="metrics">${counts
+      .map((c) => `<div class="metric"><div class="v">${c.v}</div><div class="k">${c.k}</div></div>`)
+      .join('')}</div>`,
+  );
+
+  const open = minutes.open_questions || [];
+  const openBox = $('#minutes-open');
+  openBox.hidden = open.length === 0;
+  if (open.length) {
+    openBox.innerHTML = card(
+      `Pontos em aberto (${open.length})`,
+      `<ul class="open-list">${open
+        .map(
+          (q) =>
+            `<li>${escapeHtml(q.question)}${q.reason ? `<span class="why">${escapeHtml(q.reason)}</span>` : ''}</li>`,
+        )
+        .join('')}</ul>`,
+      'Não foram definidos na reunião — o diagrama não vai inventá-los.',
+    );
+  }
+}
+
+$('#minutes-download').addEventListener('click', () => {
+  downloadBlob(state.minutesFilename, $('#minutes-md').value, 'text/markdown;charset=utf-8');
+});
+
+// Passo opcional: o texto da ata (já com as correções) vira o diagrama.
+$('#minutes-generate').addEventListener('click', async () => {
+  const markdown = $('#minutes-md').value.trim();
+  if (!markdown) {
+    showToast('A ata está vazia.');
+    return;
+  }
+  await generate(markdown, state.minutesFilename);
+});
 
 async function applyAnswers() {
   const answers = [];
@@ -483,13 +667,17 @@ async function applyAnswers() {
   )) {
     return;
   }
-  await runStream('/api/refine', {
-    text: state.documentText,
-    spec: state.spec,
-    answers,
-    filename: state.filename,
-    projectId: state.projectId,
-  });
+  await runStream(
+    '/api/refine',
+    {
+      text: state.documentText,
+      spec: state.spec,
+      answers,
+      filename: state.filename,
+      projectId: state.projectId,
+    },
+    { ...diagramOptions, title: 'Recompilando o diagrama' },
+  );
 }
 
 // true se houver alterações no modeler desde a última carga/congelamento.
@@ -510,9 +698,9 @@ function formatError(data) {
 
 // ---- Renderizar resultado ----
 async function render(data) {
-  dropzone.hidden = true;
-  projectsPanel.hidden = true;
-  usagePanel.hidden = true;
+  home.hidden = true;
+  minutesView.hidden = true;
+  closeHistory();
   workspace.hidden = false;
   newBtn.hidden = false;
   dlBpmnBtn.hidden = false;

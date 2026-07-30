@@ -131,14 +131,45 @@ Bom momento: quando a Task 4/5 precisar mudar o banco.
 
 ---
 
-### Task 7 — Modo transcrição (transcrição → ata limpa → diagrama)  ·  +1 geração p/ validar
+### Task 7 — Modo transcrição (transcrição → ata limpa → diagrama)  ·  IMPLEMENTADO no `dev`, falta 1 validação real 💸
 Transcrições de reunião (fala solta, ruído, encoding ruim) geram diagramas fracos.
-Ideia: um passo de **pré-processamento** — a IA lê a transcrição crua e produz uma
-**ata estruturada limpa** (formato que o gerador já entende bem), e essa ata
-alimenta o pipeline de diagrama. Possível UX (sugestão do dono): **duas abas** —
-uma "Transformar transcrição → ata" e outra "Gerar diagrama a partir de ata
-estruturada". Trade-off: +1 chamada de IA e feature nova. Pré-tratar encoding
-(mojibake tipo `Ata de Reuni��o`) faz parte.
+Agora existe um passo de **pré-processamento**: a IA lê a transcrição crua e emite
+uma **ata estruturada** (`MeetingMinutes`, via tool use forçado), que um
+renderizador **determinístico** transforma em Markdown — e é esse Markdown que
+alimenta o pipeline de diagrama.
+
+**Como ficou (2 chamadas de IA, uma por requisição):**
+1. `POST /api/minutes` — transcrição → ata (JSON + Markdown). **Não gera diagrama.**
+2. O especialista **revisa/corrige a ata** na tela (textarea) e clica em
+   "Gerar diagrama a partir desta ata" → `POST /api/generate` com o Markdown.
+
+Separar as duas chamadas é de propósito: o humano revisa antes de gastar a segunda,
+e cada invocação cabe no **teto de 60s do Hobby** (encadear as duas estouraria).
+
+- **UX:** duas abas na home ("Ata ou documento → diagrama" / "Transcrição → ata →
+  diagrama"), como o dono sugeriu, + tela intermediária da ata com resumo lateral
+  (fluxo detectado, contagens, pontos em aberto) e botão de baixar `.md`.
+- **Rastreabilidade:** cada item da ata carrega citação literal da transcrição
+  (com timestamp/speaker), e essas citações são renderizadas junto de cada etapa
+  do fluxo — assim a `evidence` do ProcessSpec continua apontando para a fala real.
+- **Encoding:** `src/textCleanup.ts` conserta mojibake (`ReuniÃ£o` → `Reunião`),
+  ligaduras, aspas tipográficas e caracteres invisíveis antes de gastar tokens.
+- **Custo:** a chamada da ata não vira versão de projeto, então foi criada a tabela
+  `ai_calls` no Supabase; o `GET /api/usage` agora soma versões + `ai_calls`
+  (senão o painel subestimaria o gasto da empresa).
+- **CLI:** `npm run dev -- <arquivo> --transcricao` (ata + diagrama) e `--so-ata`
+  (para na ata, 1 chamada só). Grava `<nome>.ata.md` e `<nome>.ata.json`.
+
+**Arquivos:** `schemas/meeting-minutes.schema.json`, `prompts/transcript-to-minutes.md`,
+`src/transcriptToMinutes.ts`, `src/minutesMarkdown.ts`, `src/textCleanup.ts`,
+`src/types/meeting-minutes.ts` (gerado), `api/minutes.ts`, + orchestrator,
+httpHandlers, server, store, index (CLI) e frontend.
+
+**Validado só deterministicamente** (typecheck / lint / build / typecheck:vercel +
+render da ata a partir de um objeto sintético + rota `/api/minutes` respondendo).
+**Falta:** 1 rodada real 💸 com a transcrição do chefe
+(`test-documents/07-24 Reunião Semanal...-transcript.txt`) — conferir a qualidade
+da ata e o diagrama que sai dela.
 
 ## Backlog (quando der)
 
@@ -183,22 +214,38 @@ Objetivo: **duas pessoas contribuírem** no mesmo diagrama. Níveis:
 - `src/laneLayout.ts` — layout com raias/pools (onde ficam Tasks 1, 4).
 - `src/bpmnColor.ts` — colorização da DI (paleta Alpar).
 - `schemas/process-spec.schema.json` — schema do ProcessSpec (Tasks 4, 5).
-- `prompts/` — prompts da IA (extract-process.md, refine-process.md).
+- `schemas/meeting-minutes.schema.json` — schema da ata estruturada (Task 7).
+- `src/transcriptToMinutes.ts` / `src/minutesMarkdown.ts` — modo transcrição
+  (chamada de IA e render determinístico da ata).
+- `src/textCleanup.ts` — mojibake e caracteres invisíveis.
+- `prompts/` — prompts da IA (extract-process.md, refine-process.md,
+  transcript-to-minutes.md).
 - `public/` — frontend (index.html, app.js, styles.css).
 - `vercel.json` — `framework:null`, `outputDirectory:public`, `includeFiles`
   (empacota `@napi-rs/canvas` e o build do `pdfjs`).
 
 ### Comandos
 ```bash
-npm run web                 # app local (http://localhost:3000)
-npm run dev -- <arquivo>    # CLI — GASTA API (pedir ok antes)
-npm run eval                # avaliação — GASTA API (pedir ok antes)
+npm run web                             # app local (http://localhost:3000)
+npm run dev -- <arquivo>                # CLI — GASTA API (pedir ok antes)
+npm run dev -- <arquivo> --transcricao  # transcrição → ata → diagrama (2 chamadas 💸)
+npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada 💸)
+npm run eval                            # avaliação — GASTA API (pedir ok antes)
 npm run typecheck && npm run lint && npm run build
-npm run typecheck:vercel    # valida as funções serverless em api/
-npm run gen:types           # regenera tipos a partir do schema (Tasks 4, 5)
+npm run typecheck:vercel                # valida as funções serverless em api/
+npm run gen:types                       # regenera tipos dos schemas (Tasks 4, 5, 7)
 ```
 
 ## Histórico do deploy (gotchas já resolvidos — não repetir)
+- **Sonnet 5 pensa por padrão** (mudou em relação ao 4.6): omitir o campo `thinking`
+  liga o *adaptive thinking*, e o `max_tokens` limita **thinking + resposta juntos**.
+  Como `thinking.display` é `"omitted"` por padrão, os blocos vêm vazios e o gasto
+  fica invisível. Sintoma: a chamada "dá certo", consome milhares de tokens de saída
+  e devolve um objeto quase vazio — ou estoura `max_tokens` sem produzir nada.
+  Solução: `thinking: { type: 'disabled' }` nas chamadas de extração estruturada
+  (ata, extração e refino do ProcessSpec) — são tool use forçado, pensar só consome
+  orçamento e tempo. Se um dia quiser thinking de volta, dimensione o `max_tokens`
+  para os dois.
 - Preset "Node" rodava `public/app.js` como função (`document is not defined`) →
   `"framework": null` no `vercel.json` (preset Other).
 - Upload com acento no nome (`non ISO-8859-1`) → `encodeURIComponent` no cliente +
