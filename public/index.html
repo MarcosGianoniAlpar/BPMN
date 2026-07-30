@@ -23,6 +23,17 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <!-- Custo sempre a vista: a key da API e da empresa, entao o total gasto
+             fica no header em toda tela, nao escondido no historico. -->
+        <button
+          id="cost-badge"
+          class="cost-badge"
+          hidden
+          title="Custo estimado acumulado da API (preços de lista). Clique para ver o detalhe por modelo."
+        >
+          <span class="cost-k">IA</span>
+          <span class="cost-v" id="cost-badge-value">US$ 0.00</span>
+        </button>
         <button id="history-btn" class="ghost history-btn" title="Processos salvos e uso da IA">
           <span class="hamburger" aria-hidden="true"></span>
           Histórico
@@ -84,6 +95,10 @@
           </div>
           <div class="minutes-actions">
             <span id="minutes-usage" class="minutes-usage"></span>
+            <span id="minutes-saved" class="minutes-saved" hidden></span>
+            <button id="minutes-save" class="ghost" hidden title="Grava o texto revisado no banco">
+              Salvar alterações
+            </button>
             <button id="minutes-download" class="apply-btn">Baixar ata (.md)</button>
           </div>
         </div>
@@ -176,6 +191,19 @@
         <button id="history-close" class="icon-btn" title="Fechar (Esc)">✕</button>
       </div>
       <div class="history-body">
+        <!-- Falha de banco NÃO pode parecer "nada salvo ainda": quando alguma
+             consulta quebra, a gaveta diz qual e por quê. -->
+        <p id="history-error" class="history-error" hidden></p>
+
+        <section class="history-section">
+          <h3>Atas salvas</h3>
+          <ul id="minutes-list"></ul>
+          <p id="minutes-empty" class="history-empty">
+            Nenhuma ata salva ainda. As atas geradas a partir de transcrições
+            aparecem aqui.
+          </p>
+        </section>
+
         <section class="history-section">
           <h3>Processos salvos</h3>
           <ul id="projects-list"></ul>

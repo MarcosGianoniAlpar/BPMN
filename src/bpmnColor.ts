@@ -52,6 +52,10 @@ const SHAPE_COLORS: Record<string, Fill> = {
   'bpmn:ServiceTask': { fill: '#e6f6f4', stroke: '#17a99b' }, // teal — automatico
   'bpmn:Task': { fill: '#eaf1f8', stroke: '#124e80' }, // azul — tarefa generica
   'bpmn:ExclusiveGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — decisao
+  'bpmn:ParallelGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — desvio de fluxo
+  // Espera (timer/mensagem): mesma familia dos demais eventos; o que muda e o
+  // simbolo dentro do circulo, nao a cor.
+  'bpmn:IntermediateCatchEvent': { fill: '#e6f6f4', stroke: '#17a99b' },
 };
 
 // Arestas (fluxos): um cinza-azulado discreto, mais suave que o preto padrao.

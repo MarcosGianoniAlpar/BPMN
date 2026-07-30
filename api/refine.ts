@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { loadConfig } from '../dist/config.js';
-import { rejectRequest, runRefine } from '../dist/httpHandlers.js';
+import { rejectRequest, runRefine, clientIp } from '../dist/httpHandlers.js';
 
 // A revisao (IA) leva ~1 min. Exige plano Vercel Pro (Hobby capa em 60s).
 export const maxDuration = 300;
@@ -31,5 +31,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     projectId: typeof payload.projectId === 'string' ? payload.projectId : undefined,
     spec,
     answers,
+    ip: clientIp(req.headers, req.socket?.remoteAddress),
   });
 }

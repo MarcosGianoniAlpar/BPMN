@@ -13,7 +13,15 @@ import { colorizeBpmn } from './bpmnColor.js';
 import { lintBpmn, type LintResult } from './lintBpmn.js';
 
 export class ProcessSpecValidationError extends Error {
-  constructor(public readonly issues: ValidationIssue[]) {
+  constructor(
+    public readonly issues: ValidationIssue[],
+    /**
+     * Tokens da chamada que produziu o spec invalido. A IA cobra por eles mesmo
+     * quando o resultado nao passa na validacao — sem carregar o uso ate aqui,
+     * essa geracao paga sumiria do relatorio de custo.
+     */
+    public readonly usage?: { inputTokens: number; outputTokens: number },
+  ) {
     super(
       `ProcessSpec invalido (${issues.length} problema(s)):\n` +
         issues.map((i) => `  - [${i.code}] ${i.message}`).join('\n'),
@@ -63,7 +71,7 @@ async function buildDiagram(
   onProgress({ stage: 'validate', status: 'start' });
   const validation = validateProcessSpec(raw);
   if (!validation.valid) {
-    throw new ProcessSpecValidationError(validation.errors);
+    throw new ProcessSpecValidationError(validation.errors, usage);
   }
   const spec = raw as ProcessSpec;
   onProgress({

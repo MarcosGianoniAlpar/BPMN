@@ -8,12 +8,15 @@ import {
   sendJson,
   rejectRequest,
   decodeFilename,
+  clientIp,
   runGenerate,
   runRefine,
   runMinutes,
   runExtractText,
   sendUsage,
   handleProjectsApi,
+  handleMinutesApi,
+  runUpdateMinutes,
   runFreeze,
 } from './httpHandlers.js';
 
@@ -113,7 +116,7 @@ async function handleExtractText(req: IncomingMessage, res: ServerResponse): Pro
 
 async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = loadConfig();
-  let payload: { text?: string; filename?: string };
+  let payload: { text?: string; filename?: string; minutesId?: string };
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
@@ -125,7 +128,26 @@ async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promis
     return rejectRequest(res, 'POST', '/api/generate', 400, 'Documento vazio ou invalido.');
   }
 
-  return runGenerate(res, config, text, payload.filename ?? 'documento');
+  return runGenerate(res, config, {
+    text,
+    filename: payload.filename ?? 'documento',
+    minutesId: payload.minutesId,
+    ip: clientIp(req.headers, req.socket.remoteAddress),
+  });
+}
+
+async function handleUpdateMinutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  minutesId: string,
+): Promise<void> {
+  let payload: { markdown?: string };
+  try {
+    payload = JSON.parse(await readBody(req));
+  } catch {
+    return rejectRequest(res, 'PUT', `/api/minutes/${minutesId}`, 400, 'JSON invalido.');
+  }
+  return runUpdateMinutes(res, minutesId, payload);
 }
 
 async function handleMinutes(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -142,7 +164,11 @@ async function handleMinutes(req: IncomingMessage, res: ServerResponse): Promise
     return rejectRequest(res, 'POST', '/api/minutes', 400, 'Transcricao vazia ou invalida.');
   }
 
-  return runMinutes(res, config, text, payload.filename ?? 'transcricao');
+  return runMinutes(res, config, {
+    transcript: text,
+    filename: payload.filename ?? 'transcricao',
+    ip: clientIp(req.headers, req.socket.remoteAddress),
+  });
 }
 
 async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -173,6 +199,7 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
     projectId: typeof payload.projectId === 'string' ? payload.projectId : undefined,
     spec,
     answers,
+    ip: clientIp(req.headers, req.socket.remoteAddress),
   });
 }
 
@@ -235,6 +262,24 @@ const server = createServer((req, res) => {
   // Relatorio de uso/custo
   if (method === 'GET' && url === '/api/usage') {
     guard(sendUsage(res));
+    return;
+  }
+
+  // PUT /api/minutes/{id} — salva as correcoes do especialista na ata
+  if (method === 'PUT' && segments[0] === 'api' && segments[1] === 'minutes' && segments[2]) {
+    guard(handleUpdateMinutes(req, res, segments[2]));
+    return;
+  }
+
+  // API de atas salvas (GET/DELETE)
+  if ((method === 'GET' || method === 'DELETE') && segments[0] === 'api' && segments[1] === 'minutes') {
+    guard(
+      (async () => {
+        if (!(await handleMinutesApi(method, segments, res)) && !res.headersSent) {
+          sendJson(res, 404, { error: 'Rota de ata nao encontrada.' });
+        }
+      })(),
+    );
     return;
   }
 

@@ -29,13 +29,20 @@ respostas do especialista à estrutura do processo.
    `"Decisão do especialista: ..."`, e `confidence` no máximo `medium`.
 6. Mantenha as mesmas regras de modelagem da extração: exatamente um
    `start_event`; ao menos um `end_event`; saídas de `exclusive_gateway` com
-   `condition`/`name`; só os tipos suportados
-   (`start_event`, `end_event`, `user_task`, `service_task`,
-   `exclusive_gateway`); todo nó conectado.
-7. **Responda SOMENTE com o objeto JSON do `ProcessSpec`.** Sem texto antes ou
-   depois, sem comentários, sem blocos de código.
+   `condition`/`name`; todo nó conectado. Tipos suportados:
+   `start_event`, `end_event`, `user_task`, `service_task`,
+   `exclusive_gateway` (caminhos alternativos, só um segue),
+   `parallel_gateway` (caminhos simultâneos, todos seguem — saídas **sem**
+   condição), `timer_event` (espera por tempo) e `message_event` (espera por
+   resposta externa). Só use `parallel_gateway` se o texto disser que as coisas
+   acontecem ao mesmo tempo.
+7. **Responda chamando a ferramenta `emit_process_spec`, uma única vez.** Não
+   escreva JSON em texto na resposta.
 
-## Formato (use exatamente estes campos — não invente outros)
+## Campos da ferramenta (use exatamente estes — não invente outros)
+
+Eles vão **direto na raiz** da chamada de `emit_process_spec`, sem nenhum objeto
+extra em volta (nada de `parameters`, `input` ou `process_spec`).
 
 ```
 {
@@ -45,7 +52,7 @@ respostas do especialista à estrutura do processo.
   "nodes": [
     {
       "id": "...",
-      "type": "start_event|end_event|user_task|service_task|exclusive_gateway",
+      "type": "start_event|end_event|user_task|service_task|exclusive_gateway|parallel_gateway|timer_event|message_event",
       "name": "...",
       "lane_id": "...",
       "evidence": [ { "quote": "...", "page": 1 } ],

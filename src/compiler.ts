@@ -1,14 +1,6 @@
 import BpmnModdle, { type ModdleElement } from 'bpmn-moddle';
-import type { NodeType, ProcessSpec } from './types/process-spec.js';
-
-/** Mapeamento deterministico ProcessSpec.type -> tipo BPMN. */
-const NODE_TYPE_TO_BPMN: Record<NodeType, string> = {
-  start_event: 'bpmn:StartEvent',
-  end_event: 'bpmn:EndEvent',
-  user_task: 'bpmn:UserTask',
-  service_task: 'bpmn:ServiceTask',
-  exclusive_gateway: 'bpmn:ExclusiveGateway',
-};
+import type { ProcessSpec } from './types/process-spec.js';
+import { createFlowNode } from './bpmnNodes.js';
 
 const TARGET_NAMESPACE = 'https://alpar.local/bpmn';
 
@@ -42,10 +34,7 @@ export async function compileToBpmn(spec: ProcessSpec): Promise<string> {
   // 1. Nos
   const nodeById = new Map<string, ModdleElement>();
   for (const node of spec.nodes) {
-    const el = moddle.create(NODE_TYPE_TO_BPMN[node.type], {
-      id: node.id,
-      ...(node.name ? { name: node.name } : {}),
-    });
+    const el = createFlowNode(moddle, node);
     nodeById.set(node.id, el);
     flowElements.push(el);
   }

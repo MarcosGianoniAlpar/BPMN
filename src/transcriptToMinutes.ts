@@ -12,6 +12,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/transcript-to-minutes.md');
 const schemaPath = resolve(__dirname, '../schemas/meeting-minutes.schema.json');
 
+// ATENCAO: este schema e todo INLINE, sem um `$ref` sequer — e e por isso que
+// funciona. Se um dia alguem introduzir `$defs`/`$ref` aqui, passe por
+// `inlineSchemaRefs()` (src/toolSchema.ts) antes de mandar como input_schema:
+// com os itens atras de `$ref`, o modelo devolve a ferramenta preenchida com
+// marcadores de template em vez do conteudo.
 const minutesSchema = JSON.parse(readFileSync(schemaPath, 'utf-8')) as unknown;
 
 /**

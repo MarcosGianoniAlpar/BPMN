@@ -92,6 +92,42 @@ button.ghost:hover {
 .topbar-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+/* ---- Badge de custo: acompanha o gasto da key da empresa em toda tela ---- */
+.cost-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.cost-badge:hover {
+  border-color: var(--accent);
+}
+.cost-badge .cost-k {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+.cost-badge .cost-v {
+  font-weight: 650;
+  /* Numeros de mesma largura: o total nao "pula" ao atualizar. */
+  font-variant-numeric: tabular-nums;
+}
+/* Algum modelo usado nao esta na tabela de precos: o total esta SUBESTIMADO. */
+.cost-badge.incomplete {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 /* ---- Log "como foi gerado" ---- */
@@ -386,11 +422,16 @@ main {
   border-radius: 20px;
   white-space: nowrap;
 }
+/* Mesmas familias de cor do diagrama (ver src/bpmnColor.ts): eventos em teal,
+   gateways em amber, tarefas em azul. */
 .node-type.start_event,
-.node-type.end_event {
+.node-type.end_event,
+.node-type.timer_event,
+.node-type.message_event {
   background: var(--teal);
 }
-.node-type.exclusive_gateway {
+.node-type.exclusive_gateway,
+.node-type.parallel_gateway {
   background: var(--amber);
 }
 .node-type.user_task,
@@ -806,6 +847,25 @@ main {
 }
 
 /* ---- Uso & custo (dentro da gaveta) ---- */
+/* Falha ao carregar o histórico: precisa parecer problema, não estado vazio. */
+.history-error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--amber);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.minutes-saved {
+  font-size: 11.5px;
+  color: var(--teal);
+  font-weight: 600;
+}
+
 .usage-hint {
   font-size: 10.5px;
   font-weight: 400;

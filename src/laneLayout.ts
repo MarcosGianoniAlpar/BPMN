@@ -1,5 +1,6 @@
 import BpmnModdle, { type ModdleElement } from 'bpmn-moddle';
 import type { NodeType, ProcessSpec, ProcessNode } from './types/process-spec.js';
+import { createFlowNode } from './bpmnNodes.js';
 
 /**
  * Layout ciente de raias (Fase 2). O `bpmn-auto-layout` NAO desenha lanes/pools,
@@ -12,14 +13,6 @@ import type { NodeType, ProcessSpec, ProcessNode } from './types/process-spec.js
  * pools ainda nao sao desenhados (proximo passo). Para processos SEM lanes, o
  * caminho continua sendo compiler.ts + bpmn-auto-layout.
  */
-
-const NODE_TYPE_TO_BPMN: Record<NodeType, string> = {
-  start_event: 'bpmn:StartEvent',
-  end_event: 'bpmn:EndEvent',
-  user_task: 'bpmn:UserTask',
-  service_task: 'bpmn:ServiceTask',
-  exclusive_gateway: 'bpmn:ExclusiveGateway',
-};
 
 const TARGET_NAMESPACE = 'https://alpar.local/bpmn';
 
@@ -35,12 +28,23 @@ const RIGHT_PAD = 60;
 const EXTERNAL_POOL_H = 80;
 const EXTERNAL_POOL_GAP = 40;
 
+// Rotulo de aresta (o "Sim"/"Nao" dos gateways).
+const EDGE_LABEL_H = 14; // uma linha na fonte padrao do bpmn-js
+const EDGE_LABEL_CHAR_W = 6.5; // largura media por caractere, ~11px Arial
+const EDGE_LABEL_MIN_W = 30;
+const EDGE_LABEL_GAP = 6; // afastamento da linha, para o texto nao ficar em cima
+
 function nodeSize(type: NodeType): { w: number; h: number } {
   switch (type) {
+    // Eventos (inicio, fim e os intermediarios de espera) sao circulos.
     case 'start_event':
     case 'end_event':
+    case 'timer_event':
+    case 'message_event':
       return { w: 36, h: 36 };
+    // Gateways sao losangos.
     case 'exclusive_gateway':
+    case 'parallel_gateway':
       return { w: 50, h: 50 };
     default:
       return { w: 100, h: 80 };
@@ -48,8 +52,9 @@ function nodeSize(type: NodeType): { w: number; h: number } {
 }
 
 /**
- * Camada (coluna) de cada no: maior caminho a partir de um start event. Robusto
- * a ciclos via limite de profundidade (loops de reprovacao nao travam).
+ * Camada (coluna) de cada no: maior caminho a partir de um start event,
+ * DESCONSIDERANDO as voltas (back-edges) — senao um loop de reprovacao empurra
+ * os proprios nos para a direita a cada volta contada.
  */
 function computeLayers(spec: ProcessSpec): Map<string, number> {
   const outgoing = new Map<string, string[]>();
@@ -60,15 +65,28 @@ function computeLayers(spec: ProcessSpec): Map<string, number> {
   const starts = spec.nodes.filter((n) => n.type === 'start_event').map((n) => n.id);
   const seeds = starts.length ? starts : spec.nodes.length ? [spec.nodes[0]!.id] : [];
 
-  const maxDepth = spec.nodes.length + 1;
-  const visit = (id: string, depth: number, guard: number): void => {
-    if (guard > maxDepth) return; // corta ciclos
+  // `path` = nos no caminho atual da busca. Uma seta que aponta para alguem que
+  // JA esta nesse caminho e uma volta (o "reprovado -> revisar" dos processos de
+  // aprovacao). Ela continua sendo desenhada, mas NAO entra na conta da camada.
+  //
+  // Sem isso o contador percorria o ciclo repetidamente ate bater num limite de
+  // profundidade e empurrava os nos do loop para a direita — a ponto de inverter
+  // a ordem, e um passo adiante (o "Sim" de um gateway) acabava desenhado como
+  // seta de retorno, dando a volta por baixo. Ignorar back-edges e o
+  // comportamento normal de um layout em camadas.
+  const path = new Set<string>();
+  const visit = (id: string, depth: number): void => {
     const cur = layer.get(id);
     if (cur !== undefined && cur >= depth) return;
     layer.set(id, depth);
-    for (const t of outgoing.get(id) ?? []) visit(t, depth + 1, guard + 1);
+    path.add(id);
+    for (const t of outgoing.get(id) ?? []) {
+      if (path.has(t)) continue;
+      visit(t, depth + 1);
+    }
+    path.delete(id);
   };
-  for (const s of seeds) visit(s, 0, 0);
+  for (const s of seeds) visit(s, 0);
 
   // Nos desconectados (sem caminho a partir do start) vao para a camada 0.
   for (const n of spec.nodes) if (!layer.has(n.id)) layer.set(n.id, 0);
@@ -168,10 +186,7 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
 
   const nodeById = new Map<string, ModdleElement>();
   for (const node of spec.nodes) {
-    const el = moddle.create(NODE_TYPE_TO_BPMN[node.type], {
-      id: node.id,
-      ...(node.name ? { name: node.name } : {}),
-    });
+    const el = createFlowNode(moddle, node);
     nodeById.set(node.id, el);
     flowElements.push(el);
   }
@@ -293,6 +308,9 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
         id: `${flow.id}_di`,
         bpmnElement: flowById.get(flow.id),
         waypoint: waypoints,
+        // Sem BPMNLabel explicito o bpmn-js centraliza o texto NO MEIO DA SETA,
+        // por cima da linha. Com bounds proprios ele fica ao lado dela.
+        ...(flow.name ? { label: edgeLabel(moddle, flow.name, waypoints) } : {}),
       }),
     );
   }
@@ -329,6 +347,44 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
 function internalPoolName(spec: ProcessSpec): string {
   const internal = (spec.participants ?? []).find((p) => p.type === 'internal');
   return internal?.name ?? spec.process.name;
+}
+
+/**
+ * Rotulo de uma aresta, posicionado no PRIMEIRO trecho depois da origem — que e
+ * onde o "Sim"/"Nao" de um gateway precisa ser lido, junto da decisao e nao no
+ * meio do caminho ate o destino.
+ *
+ * Trecho horizontal: o rotulo vai ACIMA da linha. Trecho vertical: vai ao LADO
+ * (direita). Nos dois casos afastado de EDGE_LABEL_GAP, porque o problema
+ * original era exatamente o texto impresso em cima da seta.
+ */
+function edgeLabel(
+  moddle: BpmnModdle,
+  name: string,
+  waypoints: ModdleElement[],
+): ModdleElement {
+  const width = Math.max(EDGE_LABEL_MIN_W, Math.round(name.length * EDGE_LABEL_CHAR_W));
+  const [p0, p1] = waypoints;
+  const x0 = p0?.get('x') as number;
+  const y0 = p0?.get('y') as number;
+  const x1 = (p1?.get('x') as number) ?? x0;
+  const y1 = (p1?.get('y') as number) ?? y0;
+
+  // Vertical quando o X nao muda; nesse caso o texto cabe melhor ao lado.
+  const vertical = Math.abs(x1 - x0) < Math.abs(y1 - y0);
+  const bounds = vertical
+    ? {
+        x: Math.round(x0 + EDGE_LABEL_GAP),
+        y: Math.round((y0 + y1) / 2 - EDGE_LABEL_H / 2),
+      }
+    : {
+        x: Math.round((x0 + x1) / 2 - width / 2),
+        y: Math.round(y0 - EDGE_LABEL_GAP - EDGE_LABEL_H),
+      };
+
+  return moddle.create('bpmndi:BPMNLabel', {
+    bounds: moddle.create('dc:Bounds', { ...bounds, width, height: EDGE_LABEL_H }),
+  });
 }
 
 /**

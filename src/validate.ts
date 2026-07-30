@@ -105,6 +105,15 @@ export function validateMeetingMinutes(minutes: unknown): ValidationResult {
 export function validateProcessSpec(spec: unknown): ValidationResult {
   const errors: ValidationIssue[] = [];
 
+  // As chaves ANTES de validar: o Ajv roda com `removeAdditional`, entao ele
+  // APAGA do objeto o que nao esta no schema. Se a IA devolver o spec embrulhado
+  // (ex.: { process_spec: {...} }), o que sobra e um objeto vazio e o erro vira
+  // "faltam process, nodes e flows" — sem dizer que veio algo, so que nao veio o
+  // esperado. Guardar as chaves aqui e a diferenca entre diagnosticar na hora e
+  // pagar outra geracao para descobrir.
+  const chavesRecebidas =
+    spec && typeof spec === 'object' && !Array.isArray(spec) ? Object.keys(spec) : [];
+
   // 1. Schema JSON
   const validate = getValidator();
   if (!validate(spec)) {
@@ -115,6 +124,13 @@ export function validateProcessSpec(spec: unknown): ValidationResult {
         path: err.instancePath,
       });
     }
+    errors.push({
+      code: 'FORMA_RECEBIDA',
+      message:
+        `A IA devolveu um objeto com as chaves: ` +
+        (chavesRecebidas.length ? chavesRecebidas.join(', ') : '(nenhuma)') +
+        '. O esperado na raiz e: process, nodes, flows.',
+    });
     // Se falhou no schema, os checks semanticos abaixo nao sao confiaveis.
     return { valid: false, errors };
   }
@@ -199,7 +215,15 @@ export function validateProcessSpec(spec: unknown): ValidationResult {
     }
   }
 
-  // Saidas de exclusive_gateway com mais de um caminho precisam de condicao
+  // Saidas de exclusive_gateway com mais de um caminho precisam de condicao.
+  //
+  // Vale SO para o exclusivo, de proposito: no parallel_gateway os caminhos
+  // acontecem todos juntos e nao ha o que condicionar — exigir condicao la
+  // estaria errado. A regra inversa (saida de parallel_gateway NAO deve ter
+  // condicao) fica no prompt e nao aqui porque um erro de validacao aborta o
+  // pipeline inteiro, jogando fora uma chamada de IA ja paga; uma condicao
+  // sobrando vira um rotulo a mais no desenho, que o especialista corrige no
+  // loop de revisao.
   for (const n of s.nodes) {
     if (n.type !== 'exclusive_gateway') continue;
     const out = s.flows.filter((f) => f.source === n.id);
