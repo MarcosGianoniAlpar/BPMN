@@ -36,11 +36,117 @@ function section(title: string, body: string[]): string[] {
   return [`## ${title}`, '', ...body, ''];
 }
 
-/** Etiqueta do executor que ajuda o extrator a montar raias e pools. */
-const ACTOR_LABEL: Record<string, string> = {
-  sistema: 'executado por sistema',
-  externo: 'organização externa',
+// ---- Idioma ----
+
+/**
+ * Os titulos das secoes sao escritos por codigo, nao pela IA. Como a ata sai no
+ * mesmo idioma da transcricao (ver prompts/transcript-to-minutes.md), sem isto
+ * um documento em ingles renderizaria com conteudo ingles sob titulos em
+ * portugues.
+ *
+ * Idioma desconhecido cai em portugues, que e o caso comum aqui — e o schema
+ * promete exatamente esse fallback.
+ */
+interface Strings {
+  minutesOf: string;
+  meetingFallback: string;
+  date: string;
+  objective: string;
+  source: string;
+  sourceValue: string;
+  context: string;
+  participants: string;
+  participant: string;
+  role: string;
+  discussion: string;
+  decisions: string;
+  owner: string;
+  rationale: string;
+  processFlow: string;
+  process: string;
+  trigger: string;
+  outcome: string;
+  condition: string;
+  actionItems: string;
+  action: string;
+  due: string;
+  openQuestions: string;
+  openQuestionsNote: string;
+  actorSystem: string;
+  actorExternal: string;
+}
+
+const PT: Strings = {
+  minutesOf: 'Ata de Reunião —',
+  meetingFallback: 'Reunião',
+  date: 'Data',
+  objective: 'Objetivo',
+  source: 'Origem',
+  sourceValue: 'transcrição da reunião, estruturada automaticamente',
+  context: 'Contexto',
+  participants: 'Participantes',
+  participant: 'Participante',
+  role: 'Papel',
+  discussion: 'Discussão',
+  decisions: 'Decisões',
+  owner: 'Responsável',
+  rationale: 'Motivo',
+  processFlow: 'Fluxo do processo acordado',
+  process: 'Processo',
+  trigger: 'Início (o que dispara)',
+  outcome: 'Fim (resultado)',
+  condition: 'Condição',
+  actionItems: 'Ações combinadas',
+  action: 'Ação',
+  due: 'Prazo',
+  openQuestions: 'Pontos em aberto',
+  openQuestionsNote: 'Não foram definidos na reunião — não devem ser assumidos no diagrama.',
+  actorSystem: 'executado por sistema',
+  actorExternal: 'organização externa',
 };
+
+const EN: Strings = {
+  minutesOf: 'Meeting Minutes —',
+  meetingFallback: 'Meeting',
+  date: 'Date',
+  objective: 'Objective',
+  source: 'Source',
+  sourceValue: 'meeting transcript, structured automatically',
+  context: 'Context',
+  participants: 'Participants',
+  participant: 'Participant',
+  role: 'Role',
+  discussion: 'Discussion',
+  decisions: 'Decisions',
+  owner: 'Owner',
+  rationale: 'Rationale',
+  processFlow: 'Agreed process flow',
+  process: 'Process',
+  trigger: 'Start (trigger)',
+  outcome: 'End (outcome)',
+  condition: 'Condition',
+  actionItems: 'Action items',
+  action: 'Action',
+  due: 'Due',
+  openQuestions: 'Open questions',
+  openQuestionsNote: 'Not settled in the meeting — must not be assumed in the diagram.',
+  actorSystem: 'performed by a system',
+  actorExternal: 'external organization',
+};
+
+const STRINGS: Record<string, Strings> = { pt: PT, en: EN };
+
+function stringsFor(language: string | undefined): Strings {
+  const code = text(language).slice(0, 2).toLowerCase();
+  return STRINGS[code] ?? PT;
+}
+
+/** Etiqueta do executor que ajuda o extrator a montar raias e pools. */
+function actorLabel(s: Strings, actorType: string | undefined): string | undefined {
+  if (actorType === 'sistema') return s.actorSystem;
+  if (actorType === 'externo') return s.actorExternal;
+  return undefined;
+}
 
 // ---- Render ----
 
@@ -49,27 +155,28 @@ export function renderMinutesMarkdown(minutes: MeetingMinutes): string {
 
   // Cabecalho. A IA costuma ja devolver um titulo do tipo "Reuniao semanal —
   // ..."; so prefixamos "Ata de Reuniao" quando o titulo nao se anuncia sozinho.
-  const meeting = minutes.meeting ?? { title: 'Reunião' };
-  const title = text(meeting.title) || 'Reunião';
-  const selfTitled = /\b(ata|reuni[aã]o|meeting)\b/i.test(title);
-  lines.push(`# ${selfTitled ? title : `Ata de Reunião — ${title}`}`, '');
+  const meeting = minutes.meeting ?? { title: '' };
+  const s = stringsFor(meeting.language);
+  const title = text(meeting.title) || s.meetingFallback;
+  const selfTitled = /\b(ata|reuni[aã]o|meeting|minutes)\b/i.test(title);
+  lines.push(`# ${selfTitled ? title : `${s.minutesOf} ${title}`}`, '');
 
   const header: string[] = [];
-  if (text(meeting.date)) header.push(`- **Data:** ${text(meeting.date)}`);
-  if (text(meeting.objective)) header.push(`- **Objetivo:** ${text(meeting.objective)}`);
-  header.push('- **Origem:** transcrição da reunião, estruturada automaticamente');
+  if (text(meeting.date)) header.push(`- **${s.date}:** ${text(meeting.date)}`);
+  if (text(meeting.objective)) header.push(`- **${s.objective}:** ${text(meeting.objective)}`);
+  header.push(`- **${s.source}:** ${s.sourceValue}`);
   lines.push(...header, '');
 
   if (text(meeting.context)) {
-    lines.push('## Contexto', '', text(meeting.context), '');
+    lines.push(`## ${s.context}`, '', text(meeting.context), '');
   }
 
   // Participantes
   const participants = minutes.participants ?? [];
   if (participants.length) {
     lines.push(
-      ...section('Participantes', [
-        '| Participante | Papel |',
+      ...section(s.participants, [
+        `| ${s.participant} | ${s.role} |`,
         '| --- | --- |',
         ...participants.map((p) => `| ${cell(p.name)} | ${cell(p.role)} |`),
       ]),
@@ -86,7 +193,7 @@ export function renderMinutesMarkdown(minutes: MeetingMinutes): string {
       const quotes = quoteLines(t.evidence);
       if (quotes.length) body.push(...quotes, '');
     });
-    lines.push(...section('Discussão', body));
+    lines.push(...section(s.discussion, body));
   }
 
   // Decisoes
@@ -95,24 +202,24 @@ export function renderMinutesMarkdown(minutes: MeetingMinutes): string {
     const body: string[] = [];
     decisions.forEach((d, i) => {
       body.push(`### D${i + 1}. ${text(d.description)}`, '');
-      if (text(d.owner)) body.push(`- **Responsável:** ${text(d.owner)}`);
-      if (text(d.rationale)) body.push(`- **Motivo:** ${text(d.rationale)}`);
+      if (text(d.owner)) body.push(`- **${s.owner}:** ${text(d.owner)}`);
+      if (text(d.rationale)) body.push(`- **${s.rationale}:** ${text(d.rationale)}`);
       if (text(d.owner) || text(d.rationale)) body.push('');
       const quotes = quoteLines(d.evidence);
       if (quotes.length) body.push(...quotes, '');
     });
-    lines.push(...section('Decisões', body));
+    lines.push(...section(s.decisions, body));
   }
 
   // Fluxo do processo — a secao que alimenta o diagrama BPMN
-  lines.push(...renderProcessFlow(minutes));
+  lines.push(...renderProcessFlow(minutes, s));
 
   // Acoes combinadas
   const actions = minutes.action_items ?? [];
   if (actions.length) {
     lines.push(
-      ...section('Ações combinadas', [
-        '| # | Ação | Responsável | Prazo |',
+      ...section(s.actionItems, [
+        `| # | ${s.action} | ${s.owner} | ${s.due} |`,
         '| --- | --- | --- | --- |',
         ...actions.map(
           (a, i) => `| ${i + 1} | ${cell(a.description)} | ${cell(a.owner)} | ${cell(a.due)} |`,
@@ -125,8 +232,8 @@ export function renderMinutesMarkdown(minutes: MeetingMinutes): string {
   const open = minutes.open_questions ?? [];
   if (open.length) {
     lines.push(
-      ...section('Pontos em aberto', [
-        '_Não foram definidos na reunião — não devem ser assumidos no diagrama._',
+      ...section(s.openQuestions, [
+        `_${s.openQuestionsNote}_`,
         '',
         ...open.map(
           (q, i) =>
@@ -139,22 +246,22 @@ export function renderMinutesMarkdown(minutes: MeetingMinutes): string {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 
-function renderProcessFlow(minutes: MeetingMinutes): string[] {
+function renderProcessFlow(minutes: MeetingMinutes, s: Strings): string[] {
   const flow = minutes.process_flow;
   const steps = flow?.steps ?? [];
   if (!flow || !steps.length) return [];
 
   const body: string[] = [];
-  if (text(flow.name)) body.push(`**Processo:** ${text(flow.name)}`, '');
-  if (text(flow.objective)) body.push(`**Objetivo:** ${text(flow.objective)}`, '');
-  if (text(flow.trigger)) body.push(`**Início (o que dispara):** ${text(flow.trigger)}`, '');
-  if (text(flow.outcome)) body.push(`**Fim (resultado):** ${text(flow.outcome)}`, '');
+  if (text(flow.name)) body.push(`**${s.process}:** ${text(flow.name)}`, '');
+  if (text(flow.objective)) body.push(`**${s.objective}:** ${text(flow.objective)}`, '');
+  if (text(flow.trigger)) body.push(`**${s.trigger}:** ${text(flow.trigger)}`, '');
+  if (text(flow.outcome)) body.push(`**${s.outcome}:** ${text(flow.outcome)}`, '');
 
   steps.forEach((step, i) => {
-    const label = step.actor_type ? ACTOR_LABEL[step.actor_type] : undefined;
+    const label = actorLabel(s, step.actor_type);
     const suffix = label ? ` _(${label})_` : '';
     body.push(`${i + 1}. **${text(step.actor)}**${suffix} — ${text(step.action)}`);
-    if (text(step.condition)) body.push(`   - Condição: ${text(step.condition)}`);
+    if (text(step.condition)) body.push(`   - ${s.condition}: ${text(step.condition)}`);
     for (const outcome of step.outcomes ?? []) {
       if (text(outcome)) body.push(`   - ${text(outcome)}`);
     }
@@ -162,7 +269,7 @@ function renderProcessFlow(minutes: MeetingMinutes): string[] {
     body.push('');
   });
 
-  return section('Fluxo do processo acordado', body);
+  return section(s.processFlow, body);
 }
 
 /**

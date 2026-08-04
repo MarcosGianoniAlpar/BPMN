@@ -329,6 +329,9 @@ function pipelinePayload(result: PipelineResult): Record<string, unknown> {
     spec: result.spec,
     bpmnXml: result.layoutXml,
     layoutWarnings: result.layoutWarnings.length,
+    // Vai inteiro (codigo + mensagem), nao so a contagem: o valor do aviso esta
+    // em dizer QUAL trecho conferir.
+    specWarnings: result.specWarnings,
     lint: result.lint,
     usage: result.usage,
   };

@@ -1,0 +1,15 @@
+// Typecheck dos testes. O tsconfig.json principal tem `rootDir: src` (para o
+// dist/ sair limpo), o que impede incluir test/ nele. Aqui a raiz e o projeto
+// inteiro e nada e emitido — so checagem de tipos.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

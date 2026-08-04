@@ -23,7 +23,13 @@ const POOL_HEADER_W = 30; // faixa vertical do nome do pool
 const LANE_HEADER_W = 30; // faixa vertical do nome da lane
 const CONTENT_PAD_L = 30; // respiro apos os cabecalhos
 const COL_W = 160; // distancia horizontal entre camadas
-const LANE_H = 130; // altura de cada faixa
+// Altura da faixa: MINIMA, nao fixa. Quando dois nos caem na mesma raia E na
+// mesma camada (o caso comum: um `parallel_gateway` abrindo dois ramos dentro do
+// mesmo departamento), a faixa cresce para caber os dois. Com altura fixa, duas
+// tarefas de 80px dividiam 130px em fatias de 65 e se sobrepunham — o bpmnlint
+// acusava `no-overlapping-elements` e "Element is outside of parent boundary".
+const LANE_H_MIN = 130;
+const NODE_SLOT_H = 100; // espaco vertical por no empilhado: 80 da tarefa + respiro
 const RIGHT_PAD = 60;
 const EXTERNAL_POOL_H = 80;
 const EXTERNAL_POOL_GAP = 40;
@@ -42,9 +48,12 @@ function nodeSize(type: NodeType): { w: number; h: number } {
     case 'timer_event':
     case 'message_event':
       return { w: 36, h: 36 };
-    // Gateways sao losangos.
+    // Gateways sao losangos — todos do mesmo tamanho; o que muda e o simbolo
+    // desenhado dentro (X, +, O, pentagono), que vem do tipo do elemento BPMN.
     case 'exclusive_gateway':
     case 'parallel_gateway':
+    case 'inclusive_gateway':
+    case 'event_based_gateway':
       return { w: 50, h: 50 };
     default:
       return { w: 100, h: 80 };
@@ -124,55 +133,80 @@ function laneOf(node: ProcessNode, laneIds: string[]): string {
   return '__default__';
 }
 
+/** Faixa horizontal de uma raia: onde comeca e quanto ocupa. */
+interface Faixa {
+  top: number;
+  height: number;
+}
+
 /**
  * Posiciona os nos: X pela camada, Y pela raia. Se varios nos caem na mesma
- * (raia, camada), distribui verticalmente dentro da faixa.
+ * (raia, camada), distribui verticalmente dentro da faixa — e a faixa cresce
+ * para caber todos, em vez de espremer.
  */
 function placeNodes(
   spec: ProcessSpec,
   laneIds: string[],
   layers: Map<string, number>,
-): { placed: Map<string, Placed>; maxLayer: number; contentLeft: number } {
+): {
+  placed: Map<string, Placed>;
+  faixas: Map<string, Faixa>;
+  maxLayer: number;
+  contentLeft: number;
+  poolHeight: number;
+} {
   const contentLeft = POOL_X + POOL_HEADER_W + LANE_HEADER_W + CONTENT_PAD_L;
-  const laneIndex = new Map(laneIds.map((id, i) => [id, i]));
 
-  // Agrupa por (lane, layer) para tratar colisoes.
+  // 1. Agrupa por (lane, layer) para tratar colisoes, guardando de passagem o
+  //    bucket mais cheio de cada raia — e ele que define a altura da faixa.
   const buckets = new Map<string, ProcessNode[]>();
+  const maxPorFaixa = new Map<string, number>();
   let maxLayer = 0;
   for (const n of spec.nodes) {
     const lane = laneOf(n, laneIds);
     const lyr = layers.get(n.id) ?? 0;
     maxLayer = Math.max(maxLayer, lyr);
     const key = `${lane}|${lyr}`;
-    (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(n);
+    const group = buckets.get(key) ?? buckets.set(key, []).get(key)!;
+    group.push(n);
+    maxPorFaixa.set(lane, Math.max(maxPorFaixa.get(lane) ?? 1, group.length));
   }
 
+  // 2. Altura e topo de cada faixa. As faixas sao empilhadas, entao o topo de
+  //    uma depende da altura de todas as anteriores — nao da mais para calcular
+  //    por indice (`i * LANE_H`).
+  const faixas = new Map<string, Faixa>();
+  let top = POOL_Y;
+  for (const laneId of laneIds) {
+    const height = Math.max(LANE_H_MIN, (maxPorFaixa.get(laneId) ?? 1) * NODE_SLOT_H);
+    faixas.set(laneId, { top, height });
+    top += height;
+  }
+
+  // 3. Posicao de cada no dentro da sua faixa.
   const placed = new Map<string, Placed>();
   for (const [key, group] of buckets) {
     const [lane, lyrStr] = key.split('|');
-    const lyr = Number(lyrStr);
-    const li = laneIndex.get(lane!) ?? 0;
-    const laneTop = POOL_Y + li * LANE_H;
-    const colCx = contentLeft + lyr * COL_W + 50; // 50 = meia largura de task
+    const faixa = faixas.get(lane!)!;
+    const colCx = contentLeft + Number(lyrStr) * COL_W + 50; // 50 = meia largura de task
 
     group.forEach((n, idx) => {
       const { w, h } = nodeSize(n.type);
-      // Distribui idx nos verticalmente dentro da faixa.
-      const slots = group.length;
-      const slotH = LANE_H / slots;
-      const cy = laneTop + slotH * (idx + 0.5);
+      // Distribui os nos do bucket verticalmente dentro da faixa.
+      const slotH = faixa.height / group.length;
+      const cy = faixa.top + slotH * (idx + 0.5);
       const cx = colCx;
       placed.set(n.id, { node: n, x: cx - w / 2, y: cy - h / 2, w, h, cx, cy });
     });
   }
-  return { placed, maxLayer, contentLeft };
+  return { placed, faixas, maxLayer, contentLeft, poolHeight: top - POOL_Y };
 }
 
 export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<string> {
   const moddle = new BpmnModdle();
   const { ids: laneIds, names: laneNames } = orderedLaneIds(spec);
   const layers = computeLayers(spec);
-  const { placed, maxLayer, contentLeft } = placeNodes(spec, laneIds, layers);
+  const { placed, faixas, maxLayer, contentLeft, poolHeight } = placeNodes(spec, laneIds, layers);
 
   const processId = `Process_${spec.process.id}`;
 
@@ -254,7 +288,6 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
 
   // --- DI (geometria) ---
   const poolWidth = contentLeft + (maxLayer + 1) * COL_W + RIGHT_PAD - POOL_X;
-  const poolHeight = laneIds.length * LANE_H;
 
   const planeElements: ModdleElement[] = [];
 
@@ -269,8 +302,9 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
   );
 
   // Lanes
-  laneIds.forEach((laneId, i) => {
+  for (const laneId of laneIds) {
     const laneEl = laneEls.get(laneId)!;
+    const faixa = faixas.get(laneId)!;
     planeElements.push(
       moddle.create('bpmndi:BPMNShape', {
         id: `${laneEl.id}_di`,
@@ -278,13 +312,13 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
         isHorizontal: true,
         bounds: moddle.create('dc:Bounds', {
           x: POOL_X + POOL_HEADER_W,
-          y: POOL_Y + i * LANE_H,
+          y: faixa.top,
           width: poolWidth - POOL_HEADER_W,
-          height: LANE_H,
+          height: faixa.height,
         }),
       }),
     );
-  });
+  }
 
   // Nodes
   for (const p of placed.values()) {

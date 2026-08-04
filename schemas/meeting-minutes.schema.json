@@ -11,6 +11,10 @@
       "required": ["title"],
       "properties": {
         "title": { "type": "string", "description": "Titulo curto da reuniao." },
+        "language": {
+          "type": "string",
+          "description": "Codigo ISO 639-1 do idioma em que VOCE escreveu esta ata, que e o mesmo da transcricao: \"pt\", \"en\", \"es\"... Serve para o renderizador escolher os titulos das secoes; se vier vazio ou desconhecido, ele usa portugues."
+        },
         "date": { "type": "string", "description": "Data como aparece na transcricao. Vazio se nao houver." },
         "context": { "type": "string", "description": "Um paragrafo de pano de fundo." },
         "objective": { "type": "string", "description": "Objetivo declarado da reuniao." }

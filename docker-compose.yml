@@ -1,3 +1,5 @@
+# Auto-hospedagem do servidor Node. NAO e o deploy em uso (esse e o Vercel);
+# ver o Dockerfile para o porque de existir.
 services:
   bpmn:
     build: .
@@ -9,9 +11,8 @@ services:
       - '3000:3000'
     environment:
       - PORT=3000
-    # Lê ANTHROPIC_API_KEY e ANTHROPIC_MODEL do .env (mesmo arquivo do CLI).
+    # Lê ANTHROPIC_API_KEY, DATABASE_URL e os limites de uso do .env (o mesmo
+    # arquivo do CLI). Sem DATABASE_URL o servidor não sobe: o estado (projetos,
+    # versões, contador de uso) vive no Postgres, não em disco local.
     env_file:
       - .env
-    # Persiste o banco SQLite fora do container. Backup = copiar a pasta ./data.
-    volumes:
-      - ./data:/app/data

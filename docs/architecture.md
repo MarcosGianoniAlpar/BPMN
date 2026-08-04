@@ -1,8 +1,12 @@
 # Arquitetura — visao de destino e fases
 
-Este repositorio implementa a **Fase 1 (MVP)** de um sistema maior. Aqui fica o
-mapa de onde ela se encaixa. A arquitetura completa e a motivacao detalhada
-estao no documento original `arquitetura_projeto_llm_bpmn.md` (fora do repo).
+Este repositorio esta **no meio da Fase 2** de um sistema maior. Aqui fica o mapa
+de onde ele se encaixa. A arquitetura completa e a motivacao detalhada estao no
+documento original `arquitetura_projeto_llm_bpmn.md` (fora do repo).
+
+> Este documento descreve o **destino**. Para o que existe hoje, veja o
+> `README.md` (secao "Escopo"); para o que vem a seguir,
+> `docs/proximos-passos-amanha.md`.
 
 ## Principio central (vale em todas as fases)
 
@@ -12,21 +16,32 @@ evidencias e ambiguidades. Codigo deterministico faz o resto. Isso desacopla a
 interpretacao probabilistica da geracao, e permite validar, testar, auditar e
 trocar de modelo.
 
-## Fase 1 — MVP (este repositorio)
+## Fase 1 — MVP  ·  **concluida**
 
 Um unico runtime Node/TypeScript. Um documento por vez. Sem fila, sem OCR, sem
 banco vetorial, sem Python. Elementos: start/end, user/service task, exclusive
 gateway, sequence flow, lanes simples, pool caixa-preta externo. Perguntas de
 esclarecimento resolvidas por humano.
 
-Objetivo: **provar que a extracao e boa o suficiente para ser util**, barato.
+Objetivo cumprido: **provar que a extracao e boa o suficiente para ser util**,
+barato.
 
-## Fase 2 — Intermediario
+## Fase 2 — Intermediario  ·  **em andamento**
 
-Multiplos documentos (exige resolver contradicao entre fontes), pools reais,
-parallel/inclusive gateways, timers, boundary events, message flows,
-subprocessos, interface de perguntas amigavel, correcao automatica via JSON
-Patch em vez de reenviar XML.
+Ja entregue:
+
+- **pools e raias desenhados** (geometria propria em `src/laneLayout.ts`);
+- **parallel gateways** e **eventos intermediarios** de timer e mensagem;
+- ingestao de `.pdf`/`.docx`, `bpmnlint` no pipeline, harness de avaliacao;
+- **persistencia** de projetos e versoes (Postgres) e edicao com "congelar versao";
+- **interface de perguntas** amigavel (loop de esclarecimento na tela);
+- **modo transcricao**: transcricao crua → ata estruturada → diagrama, com a ata
+  revisada por humano entre as duas chamadas de IA;
+- **teto de uso e custo a vista** (a chave da API e da empresa).
+
+Ainda em aberto nesta fase: **message flows entre pools**, inclusive gateways,
+boundary events, subprocessos, multiplos documentos (exige resolver contradicao
+entre fontes) e correcao automatica via JSON Patch em vez de reenviar XML.
 
 ## Fase 3 — Completo
 

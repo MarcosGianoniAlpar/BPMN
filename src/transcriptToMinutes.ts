@@ -7,6 +7,7 @@ import type { MeetingMinutes } from './types/meeting-minutes.js';
 import { cleanText } from './textCleanup.js';
 import { AiCallError } from './aiError.js';
 import { validateMeetingMinutes } from './validate.js';
+import { thinkingParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/transcript-to-minutes.md');
@@ -112,26 +113,33 @@ export async function transcriptToMinutes(
   const client = new Anthropic({ apiKey: config.anthropicApiKey });
   const cleaned = cleanText(transcriptText);
 
-  const message = await client.messages.create({
-    model: config.model,
-    max_tokens: config.maxOutputTokens,
-    system: readFileSync(promptPath, 'utf-8'),
-    // OBRIGATORIO no Sonnet 5: omitir `thinking` faz o modelo pensar por padrao
-    // (mudou em relacao ao 4.6), e `max_tokens` limita thinking + resposta JUNTOS.
-    // Foi isso que esvaziou a ata: os tokens de saida foram gastos pensando e
-    // sobrou quase nada para a ferramenta. Aqui a tarefa e extracao estruturada
-    // com ferramenta forcada — pensar so consome orcamento e tempo (e o tempo e
-    // o que nos aproxima do teto de 60s do Vercel).
-    thinking: { type: 'disabled' },
-    tools: [MEETING_MINUTES_TOOL],
-    tool_choice: { type: 'tool', name: MEETING_MINUTES_TOOL.name },
-    messages: [
-      {
-        role: 'user',
-        content: `Transcricao da reuniao:\n\n<transcricao>\n${cleaned}\n</transcricao>`,
-      },
-    ],
-  });
+  // Streaming pelo mesmo motivo da extracao (ver `extractProcessSpec.ts`): sem
+  // ele o SDK capa o `max_tokens` em ~21333. A ata de uma reuniao de 1h ja
+  // consumiu ~8600 tokens de saida; uma reuniao longa chega perto do teto.
+  const message = await client.messages
+    .stream({
+      model: config.model,
+      max_tokens: config.maxOutputTokens,
+      system: readFileSync(promptPath, 'utf-8'),
+      // OBRIGATORIO passar o campo no Sonnet 5: omitir `thinking` faz o modelo
+      // pensar por padrao (mudou em relacao ao 4.6), e `max_tokens` limita
+      // thinking + resposta JUNTOS. Foi isso que esvaziou a ata: os tokens de
+      // saida foram gastos pensando e sobrou quase nada para a ferramenta.
+      //
+      // O MODO e configuravel (`AI_THINKING`) — ver src/aiThinking.ts. Aqui o
+      // padrao `disabled` custa menos e, das tres chamadas, esta e a mais
+      // proxima do teto de 60s do Vercel: pensar tambem gasta relogio.
+      thinking: thinkingParam(config),
+      tools: [MEETING_MINUTES_TOOL],
+      tool_choice: { type: 'tool', name: MEETING_MINUTES_TOOL.name },
+      messages: [
+        {
+          role: 'user',
+          content: `Transcricao da reuniao:\n\n<transcricao>\n${cleaned}\n</transcricao>`,
+        },
+      ],
+    })
+    .finalMessage();
 
   return {
     minutes: readMinutesFromMessage(message),

@@ -686,7 +686,48 @@ const diagramOptions = {
   },
 };
 
+/**
+ * Pré-voo: confirma o documento ANTES de gastar. O erro caro não é o documento
+ * difícil — é o documento errado, que só se descobre depois de pagar a chamada.
+ * Mostra começo e fim (o fim denuncia arquivo truncado na extração).
+ */
+// Espelha src/sizing.ts. Estourar o teto de saída é a falha mais cara: a chamada
+// é cobrada inteira e não devolve nada, porque o JSON vem cortado no meio.
+const CHARS_POR_TOKEN = 3.5;
+const SAIDA_POR_TOKEN_DE_DOCUMENTO = 4;
+const MAX_OUTPUT_TOKENS = 64000;
+
+function confirmarDocumento(text, filename, modo) {
+  const linhas = text.split('\n').filter((l) => l.trim());
+  const amostra = (ls) => ls.map((l) => '  | ' + l.slice(0, 70)).join('\n');
+  const tokens = Math.round(text.length / CHARS_POR_TOKEN);
+  const saida = tokens * SAIDA_POR_TOKEN_DE_DOCUMENTO;
+
+  let aviso = '';
+  if (saida > MAX_OUTPUT_TOKENS) {
+    aviso =
+      `\n⚠ RISCO ALTO de estourar o limite de saída (~${saida} estimados, teto ${MAX_OUTPUT_TOKENS}).\n` +
+      `Se estourar, a chamada é COBRADA e não devolve nada.\n` +
+      `Considere dividir o documento por processo.\n`;
+  } else if (saida > MAX_OUTPUT_TOKENS * 0.8) {
+    aviso = `\n⚠ Margem apertada: ~${saida} tokens de resposta para um teto de ${MAX_OUTPUT_TOKENS}.\n`;
+  }
+
+  return confirm(
+    `Enviar este documento para a IA?\n\n` +
+      `Arquivo: ${filename || '(sem nome)'}\n` +
+      `Tamanho: ${text.length} chars · ~${tokens} tokens\n` +
+      `Modo: ${modo}\n` +
+      aviso +
+      `\nComeço:\n${amostra(linhas.slice(0, 3))}\n\n` +
+      `Fim:\n${amostra(linhas.slice(-2))}\n\n` +
+      `Isto gasta a API da empresa.`,
+  );
+}
+
 async function generate(text, filename, minutesId) {
+  // minutesId: veio da ata já revisada na tela, então o conteúdo já foi visto.
+  if (!minutesId && !confirmarDocumento(text, filename, 'documento → diagrama')) return;
   state.documentText = text;
   state.filename = (filename || 'processo').replace(/\.[^.]+$/, '');
   await runStream('/api/generate', { text, filename, minutesId }, diagramOptions);
@@ -694,6 +735,7 @@ async function generate(text, filename, minutesId) {
 
 // ---- Modo transcrição: a transcrição vira a ata estruturada (a entrega) ----
 async function makeMinutes(text, filename) {
+  if (!confirmarDocumento(text, filename, 'transcrição → ata')) return;
   await runStream('/api/minutes', { text, filename }, {
     stages: MINUTES_STAGES,
     title: 'Estruturando a ata',
@@ -909,7 +951,7 @@ async function render(data) {
 
   renderMetrics(spec, data);
   renderQuestions(spec.unresolved_questions || []);
-  renderLint(data.lint);
+  renderLint(data.lint, data.specWarnings);
   renderNodes(spec.nodes || []);
 
   try {
@@ -995,17 +1037,30 @@ function renderQuestions(questions) {
     .join('');
 }
 
-function renderLint(lint) {
+// `specWarnings` sao defeitos que a validacao CONSERTOU para o diagrama poder
+// sair (ex.: um fluxo apontando para um no que a IA nao declarou, descartado).
+// Entram na mesma caixa do bpmnlint de proposito: para o especialista e a mesma
+// pergunta — "o que eu preciso conferir neste desenho?". Consertar em silencio
+// seria pior que abortar: o desenho pareceria fiel ao documento.
+function renderLint(lint, specWarnings) {
   const box = $('#lint');
   const list = $('#lint-list');
   const count = $('#lint-count');
-  if (!lint || !lint.issues || lint.issues.length === 0) {
+  const doSpec = (specWarnings || []).map((w) => ({
+    category: 'warning',
+    rule: w.code,
+    message: w.message,
+  }));
+  const issues = [...doSpec, ...((lint && lint.issues) || [])];
+  if (issues.length === 0) {
     box.hidden = true;
     return;
   }
   box.hidden = false;
-  count.textContent = `${lint.errors} erro(s) · ${lint.warnings} aviso(s)`;
-  list.innerHTML = lint.issues
+  const erros = (lint && lint.errors) || 0;
+  const avisos = ((lint && lint.warnings) || 0) + doSpec.length;
+  count.textContent = `${erros} erro(s) · ${avisos} aviso(s)`;
+  list.innerHTML = issues
     .map(
       (i) => `<li class="lint-item ${i.category}" ${i.id ? `data-id="${escapeHtml(i.id)}"` : ''}>
         <span class="lint-cat ${i.category}">${i.category === 'error' ? 'erro' : 'aviso'}</span>
@@ -1039,14 +1094,18 @@ function renderNodes(nodes) {
     const li = document.createElement('li');
     li.className = 'node-item';
     li.dataset.id = n.id;
-    const ev = (n.evidence && n.evidence[0] && n.evidence[0].quote) || '';
+    // O diagrama mostra so o `name` (rotulo curto); e aqui que o especialista le
+    // a tarefa por extenso e a base dela. Todas as citacoes, nao so a primeira:
+    // e delas que sai o "quem disse isso, em que momento".
+    const quotes = (n.evidence || []).map((e) => e && e.quote).filter(Boolean);
     li.innerHTML = `
       <div class="node-top">
         <span class="node-type ${n.type}">${TYPE_LABEL[n.type] || n.type}</span>
         <span class="node-name">${escapeHtml(n.name || n.id)}</span>
         ${n.confidence ? `<span class="node-conf">${n.confidence}</span>` : ''}
       </div>
-      ${ev ? `<div class="node-ev">“${escapeHtml(ev)}”</div>` : ''}`;
+      ${n.detail ? `<div class="node-detail">${escapeHtml(n.detail)}</div>` : ''}
+      ${quotes.map((q) => `<div class="node-ev">“${escapeHtml(q)}”</div>`).join('')}`;
     li.addEventListener('click', () => selectNode(n.id, li));
     list.appendChild(li);
   });

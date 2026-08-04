@@ -1,0 +1,52 @@
+name: CI
+
+# Roda em todo push nos branches de trabalho e em todo PR para `main`.
+# `main` e PRODUCAO no Vercel (deploy automatico), entao o PR de `dev` -> `main`
+# so deve ser aberto com isto verde.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+
+# Um PR novo cancela a execucao anterior do mesmo branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verificar:
+    name: Typecheck, lint, testes e build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Casa com o `engines.node` do package.json (>= 22.5).
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Typecheck (src)
+        run: npm run typecheck
+
+      - name: Typecheck (testes)
+        run: npm run typecheck:test
+
+      - name: Lint
+        run: npm run lint
+
+      # Nada aqui chama a API da Anthropic: a suite cobre so a metade
+      # deterministica (validacao, compiladores, layout, cor, render da ata).
+      # O CI nao tem ANTHROPIC_API_KEY nem DATABASE_URL, e nao precisa.
+      - name: Testes
+        run: npm test
+
+      # Compila e checa as funcoes serverless de api/, que importam de dist/.
+      # Roda por ultimo porque e o passo mais lento.
+      - name: Build e typecheck das funcoes Vercel
+        run: npm run typecheck:vercel

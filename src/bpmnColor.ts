@@ -45,14 +45,22 @@ interface Fill {
 
 // Paleta alinhada ao CSS do app: azul #124e80, teal #17a99b, amber #b7791f.
 // `fill` e um tom claro do `stroke` para o preenchimento das formas.
-const SHAPE_COLORS: Record<string, Fill> = {
+// Exportado para o teste: todo elemento produzido por NODE_TYPE_TO_BPMN precisa
+// ter cor aqui. Sem isso, um tipo novo sai preto-e-branco no meio de um diagrama
+// colorido — nada quebra, so fica feio, e ninguem percebe ate o chefe ver.
+export const SHAPE_COLORS: Record<string, Fill> = {
   'bpmn:StartEvent': { fill: '#e6f6f4', stroke: '#17a99b' }, // teal — inicio
   'bpmn:EndEvent': { fill: '#e2e9f2', stroke: '#124e80' }, // azul — fim
   'bpmn:UserTask': { fill: '#eaf1f8', stroke: '#124e80' }, // azul — tarefa humana
   'bpmn:ServiceTask': { fill: '#e6f6f4', stroke: '#17a99b' }, // teal — automatico
   'bpmn:Task': { fill: '#eaf1f8', stroke: '#124e80' }, // azul — tarefa generica
+  // Gateways: todos amber, porque todos sao pontos de desvio. O que os separa e
+  // o simbolo dentro do losango (X, +, O, pentagono) — dar cor diferente a cada
+  // um faria o leitor procurar significado onde nao ha.
   'bpmn:ExclusiveGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — decisao
   'bpmn:ParallelGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — desvio de fluxo
+  'bpmn:InclusiveGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — ramos condicionais
+  'bpmn:EventBasedGateway': { fill: '#fdf3e3', stroke: '#b7791f' }, // amber — corrida
   // Espera (timer/mensagem): mesma familia dos demais eventos; o que muda e o
   // simbolo dentro do circulo, nao a cor.
   'bpmn:IntermediateCatchEvent': { fill: '#e6f6f4', stroke: '#17a99b' },

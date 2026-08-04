@@ -13,9 +13,9 @@
    Ir pra PROD (merge `dev`→`main`) **só com aprovação explícita**.
 2. **Mostrar o diff/resumo ANTES de commitar.** Só commitar no `dev` após o ok.
 3. **Consultar antes de gastar a API** (key é da **empresa**). Geração/refino/eval
-   gastam (`npm run dev`, `npm run eval`, `/api/generate`, `/api/refine`). Testes
-   determinísticos (compilador, layout, cor, lint, rótulos) **não gastam** e podem
-   rodar livres.
+   gastam (`npm run dev`, `npm run eval`, `/api/generate`, `/api/minutes`,
+   `/api/refine`). Testes determinísticos (`npm test`, typecheck, lint, build)
+   **não gastam** e podem rodar livres.
 
 ---
 
@@ -23,177 +23,607 @@
 
 - **App no ar no Vercel**, repo `MarcosGianoniAlpar/BPMN` (time Alpar, plano
   **Hobby**). Arquitetura: estático (`public/`) + funções serverless (`api/`),
-  banco **Supabase/Postgres**. Geração de `.txt`/`.pdf`/`.docx` funciona ponta a
-  ponta na PROD.
-- **Colorização** com a paleta Alpar entregue (`src/bpmnColor.ts`).
-- **Branch `dev`** já existe no GitHub (Preview no Vercel). `dev` == `main` no
-  momento (nada novo mergeado pra PROD).
+  banco **Supabase/Postgres**.
 - Node/TypeScript, ESM (NodeNext). **Fonte da verdade = `ProcessSpec`** (Opção A).
   Dois caminhos de layout: com raias → `src/laneLayout.ts`; sem raias →
   `src/compiler.ts` + `bpmn-auto-layout` (orchestrator escolhe por `hasLanes`).
+- **`dev` está à frente do `main`**: tem tool use, modo transcrição, rótulos,
+  tipos de nó, teto de uso, custo à vista, e a suíte de testes + CI. Nada disso
+  foi pra PROD ainda.
 
 ## Decisões travadas
 
-- **Sem plano Pro no Vercel** por ora. Geração leva ~1 min; Hobby capa em **60s**.
-  Hoje está **abaixo de 60s → funciona**, mas é borderline (doc muito grande pode
-  estourar 504). `maxDuration=300` já no código, sobe sozinho se ativarem Pro.
+- **Sem plano Pro no Vercel** por ora. Hobby capa em **60s** (`maxDuration=300` é
+  capado; sobe sozinho se ativarem Pro).
 - **Modelo fixo `claude-sonnet-5`** (sem evals / sem troca de modelo por ora).
-- **Cadastro/login: NÃO agora** — o dono vai confirmar com o chefe. (Ver Task 2.)
+- **Cadastro/login: NÃO agora** — o dono vai confirmar com o chefe.
+- **O destino é sempre ServiceNow.** Os processos modelados aqui viram Flow
+  Designer. Isso define a prioridade das features de BPMN (Task F): o que tem
+  contraparte no ServiceNow vem primeiro. Ver a tabela de equivalência na Task G.
+- **Idioma da saída SEGUE o documento de entrada** (decidido 2026-08-03). Não
+  traduzir. Um seletor de idioma para exportação ficou **em aberto** — ver
+  Backlog; a recomendação é traduzir na exportação, não guardar uma segunda
+  versão, para não criar duas fontes da verdade.
+- ~~Sem features novas de BPMN por enquanto~~ — **revertido em 2026-08-03**: a
+  ata real de PO (`~/Downloads/ata_teste_automacao_PO.md`) mostrou que o subset
+  atual não cobre um processo de verdade. Ver Task F.
 
 ---
 
-## Feito nesta sessão — validar no próximo chat
+## ✅ Concluído (não refazer)
 
-**Robustez da extração (tool use / saída estruturada) — implementado no `dev`,
-falta 1 teste real.** A extração e o refino agora usam **tool use forçado**
-(`emit_process_spec`, `tool_choice` forçado) em vez de pedir JSON em texto: o SDK
-entrega `tool_use.input` já como objeto, então some o erro
-`Expected ',' or ']' ... in JSON` que aparecia com documentos bagunçados
-(transcrições, encoding ruim). Truncamento por tokens vira erro claro
-(`max_tokens`). `vercel.json` empacota `schemas/**` e `prompts/**` (a ferramenta lê
-o schema em runtime). Arquivos: `src/extractProcessSpec.ts`, `src/refineProcessSpec.ts`,
-`vercel.json`. Validado só deterministicamente (typecheck/lint/build/typecheck:vercel
-+ carga do schema). **Falta:** 1 geração real (💸) — testar com a **ata de mudanças
-emergenciais** (fluxo feliz) e com a **transcrição bagunçada** (o caso que quebrava).
-SDK `@anthropic-ai/sdk` é 0.68.0 e NÃO tem structured outputs/`strict`; por isso
-tool use "normal" (não-strict), que já resolve. Se um dia subir o SDK, dá pra
-endurecer com `strict: true`.
+- **Validação reparável: defeito consertável deixou de abortar** (2026-08-04) —
+  a mudança de maior impacto do dia. `validateProcessSpec` passou a devolver
+  **`errors` (fatais) + `warnings` (reparados/tolerados)**, e muta `spec.flows`
+  descartando os que apontam para nós inexistentes.
+  **O caso:** o mesmo recorte rodou duas vezes; uma saiu perfeita, a outra veio
+  com 8 fluxos apontando para 2 gateways que a IA esqueceu de declarar. 33 nós
+  bons, e a geração inteira foi para o lixo por causa de 2 nós faltando. Das 5
+  gerações do dia, **1 virou diagrama**; ~US$ 0,57 em abortos.
+  **A régua:** fatal = quebra o XML (`SCHEMA`, `DUPLICATE_ID`). Reparável = o
+  bpmn-js desenha assim mesmo e o especialista corrige no painel — fluxo órfão
+  (descartado; o `compiler.ts` explodiria nele), nó solto, raia/participante
+  inexistente, rótulo faltando em gateway condicional, e os dois do
+  `event_based_gateway` — **revertendo** a decisão que eu mesmo tinha tomado
+  horas antes de fazê-los fatais: BPMN inválido pelo padrão, sim, mas *renderiza*,
+  e abortar troca um diagrama defeituoso por diagrama nenhum ao preço de uma
+  geração.
+  Os avisos chegam à tela (mesma caixa do bpmnlint) e ao CLI — reparo em silêncio
+  seria pior que o aborto: o desenho pareceria fiel ao documento.
+  Junto: `NODE_DISCONNECTED` virou **um** aviso resumido. Com `flows` vazio ele
+  cuspia 56 linhas idênticas que enterravam o único fato que importava.
+  Verificado reproduzindo os 11 defeitos exatos da rodada real: **sai diagrama
+  com 11 avisos**.
 
-## TASKS
+- **`AI_THINKING` configurável + idioma da saída** (2026-08-04) — duas coisas que
+  precisavam existir **antes** da próxima geração paga.
+  **(a) Flag `AI_THINKING=disabled|adaptive`** (`src/aiThinking.ts`, um lugar só
+  para as 3 chamadas). O `disabled` fixo foi decidido quando `MAX_OUTPUT_TOKENS`
+  era 20000 e o thinking comia o orçamento; com 64000 a conta mudou, e decidir
+  entre os dois custa duas gerações — então virou flag. Um valor inválido
+  **explode** em vez de cair no padrão (`AI_THINKING=enabled`, o modo removido no
+  Sonnet 5, faria a rodada de teste acontecer no modo errado sem ninguém saber).
+  O modo aparece na confirmação do CLI e no `> Modelo:` do log.
+  **(b) Bug de idioma:** a ata de PO está em inglês e os rótulos saíram em
+  português. A regra 5 do prompt manda seguir o documento, mas **o prompt inteiro
+  está escrito em português** e o modelo seguiu o idioma da instrução. Agora os
+  três prompts dizem explicitamente que o idioma *deles* não define o da saída, e
+  a extração repete o lembrete **depois** do `<documento>` — última coisa que o
+  modelo lê antes de responder.
+  **Confirmado na referência da API** (não de memória): no Sonnet 5 `adaptive` é
+  o único modo "ligado" (`budget_tokens` devolve 400); `tool_choice` forçado
+  **+ thinking é válido na API direta** — só o Bedrock exige `disabled`; e o SDK
+  0.68 não tipa `adaptive`, daí o cast confinado em `src/aiThinking.ts`.
 
-Ordem sugerida: **1 → 6**. Todas as Tasks 1–5 são **determinísticas (não gastam
-API)**; a validação real dos message flows (Task 4) precisa de 1 geração aprovada.
-
-### Task 1 — Rótulos do diagrama (texto em cima da linha)  ·  sem API
-**Problema:** nomes de fluxo (ex.: "Sim"/"Não" nos gateways) e às vezes nomes de nós
-ficam **em cima da linha** ou mal posicionados.
-**Causa:** no `src/laneLayout.ts` a gente emite os `bpmndi:BPMNEdge`/`BPMNShape` sem
-`di:BPMNLabel`, então o bpmn-js coloca o rótulo no meio da seta por padrão.
-**Fazer:**
-- Emitir `bpmndi:BPMNLabel` com `dc:Bounds` próprio pros edges com nome — deslocar o
-  rótulo pra **cima/ao lado** da linha (não em cima).
-- Conferir posição dos rótulos de nós (dentro/abaixo).
-- (Ver também o caminho sem raias: o `bpmn-auto-layout` posiciona rótulos sozinho;
-  checar se precisa de ajuste lá.)
-**Validar:** visualmente no navegador local (`npm run web`), sem gerar via IA — dá
-pra abrir um `.bpmn` salvo ou usar um spec sintético.
-
-### Task 2 — Segurança / proteção contra gasto indevido  ·  sem API
-A app é **pública e sem login**: quem tiver a URL pode gerar e **queimar a verba da
-empresa**.
-- **Rate limit (VAMOS FAZER):** limitar `/api/generate` (e `/api/refine`) por IP/janela.
-  Em serverless **não dá contador em memória** → usar **contador compartilhado no
-  Supabase** (tabela de contagem por IP+janela). (Alternativa: Upstash Redis free —
-  não escolhido, evita dependência nova.)
-- **Cadastro/login: aguardando o chefe.** Se aprovado, avaliar **Supabase Auth**.
-- **Repo privado:** `MarcosGianoniAlpar/BPMN` está **público** (código da empresa) —
-  tornar privado.
-
-### Task 3 — Custo sempre à vista  ·  sem API
-Hoje o custo só aparece no painel "Uso & custo" da **home**. Deixar visível o tempo
-todo (key é da empresa).
-- **Badge fixo no header** (home + workspace): total acumulado em US$, atualiza a
-  cada geração (puxa de `GET /api/usage`).
-- **Custo da geração atual** inline no resultado: "esta geração: US$ X · N tokens".
-- Só frontend + rota existente (`src/store.ts` já tem `getUsageReport()`).
-
-### Task 4 — Message flows entre pools  ·  precisa extensão de modelo (+1 geração p/ validar)
-Desenhar as setas tracejadas entre o processo interno e os pools externos.
-**Porém o `ProcessSpec` NÃO liga nó ↔ participante externo hoje** (flows são só
-nó→nó). Precisa:
-- Adicionar `message_flows` no schema (`schemas/process-spec.schema.json`) — ex.:
-  `{ id, source, target, name }` ligando um nó a um participante externo — e
-  **regenerar tipos** (`npm run gen:types`).
-- Ensinar o **prompt de extração** a preenchê-los (`prompts/extract-process.md` e
-  `refine-process.md`).
-- Desenhar `bpmn:MessageFlow` no `src/laneLayout.ts` (interno ↔ pool externo).
-- **1ª migration real** (ver Task 6) se envolver mudança de tabela — aqui é só schema
-  JSON do spec, mas vale alinhar.
-**Validar:** desenho com **spec sintético** (sem API) primeiro; extração real com
-**1 geração** só quando aprovado.
-
-### Task 5 — Tipos de nó mais ricos  ·  sem API (mas +1 geração p/ validar extração)
-Hoje só: `start_event, end_event, user_task, service_task, exclusive_gateway`.
-Falta principalmente o **gateway paralelo (AND)** — processos reais têm caminhos
-simultâneos; e eventos intermediários (timer/mensagem), subprocessos.
-- Mexer no schema + `NODE_TYPE_TO_BPMN` (`laneLayout.ts`/`compiler.ts`) + prompt.
-- Validar desenho com spec sintético; extração real com geração aprovada.
-
-### Task 6 — Estrutura de dados: backup + migrations  ·  sem API
-**Backup:** Supabase **free não tem backup automático**. Criar script
-`npm run backup` que roda `pg_dump` pela `DATABASE_URL` e salva `.sql` datado;
-guardar fora do Supabase. (Agendar no PC/cron do dono.)
-**Migrations:** hoje **não há migration formal** — o schema é criado por
-`CREATE TABLE IF NOT EXISTS` no `src/store.ts` (bootstrap idempotente) + `ALTER`
-pontuais. Montar esquema **leve**: pasta `migrations/` com SQL numerado
-(`001_init.sql`, `002_...`) + tabela `schema_migrations` + script `npm run migrate`.
-Bom momento: quando a Task 4/5 precisar mudar o banco.
+- **Altura da raia deixou de ser fixa** (2026-08-04) — bug **pré-existente**,
+  achado ao lintar o diagrama da F4/F6. `LANE_H = 130` não crescia com o número
+  de nós que caem no mesmo par (raia, camada): duas tarefas de 80px dividiam a
+  faixa em fatias de 65 e **se sobrepunham**, vazando para fora do pool. Reproduz
+  com qualquer `parallel_gateway` que abra dois ramos na **mesma** raia — que é
+  exatamente a §4 da ata de PO (orçamento e estoque checados juntos). Agora a
+  altura de cada faixa vem do bucket mais cheio dela (`LANE_H_MIN = 130`,
+  `NODE_SLOT_H = 100`) e o topo é acumulado, não `i * LANE_H`. No diagrama de
+  teste: de 13 avisos do bpmnlint para 2 (e os 2 são forma da fixture, não
+  geometria). Coberto por dois testes em `test/laneLayout.test.ts`.
+- **F4 · `inclusive_gateway` e F6 · `event_based_gateway`** (2026-08-04) — as duas
+  construções da tabela da Task F que **não dependem da Task I** e não custam
+  geometria nova: gateway é losango 50×50 como os outros, o que muda é o símbolo
+  desenhado dentro. Schema + `gen:types` + `bpmnNodes.ts` + `nodeSize` +
+  `bpmnColor` + os dois prompts + `validate.ts` + fixtures. Duas regras novas de
+  validação: (a) `inclusive_gateway` passou a exigir `condition`/`name` nas
+  saídas, como o exclusivo — nos dois o caminho é condicional, o que muda é
+  quantos seguem; (b) `event_based_gateway` exige ≥2 saídas apontando **direto**
+  para `timer_event`/`message_event` (`EVENT_GATEWAY_SEM_CORRIDA` e
+  `EVENT_GATEWAY_ALVO_INVALIDO`) — sem isso o BPMN sai inválido, que não é algo
+  que o especialista conserte no painel.
+  **`no-inclusive-gateway` foi desligado no `.bpmnlintrc`**: a regra vem do
+  `bpmnlint:recommended` porque *motores de execução* BPMN tropeçam no join
+  inclusivo. O destino aqui é o ServiceNow, e a ata de PO (§4) pede número
+  variável de ramos explicitamente — deixar ligada seria o app avisar que o
+  modelo certo está errado.
+  Corrigido de quebra: o `description` do `name` no schema ainda mandava verbo
+  "terminado em -ar/-er/-ir". Os prompts já tinham sido neutralizados em
+  2026-08-03, o schema não — e o schema **é a definição da ferramenta que o
+  modelo lê**, então com a ata em inglês as duas instruções se contradiziam.
+  E `src/types/meeting-minutes.ts` estava **desatualizado** em relação ao schema
+  (faltava `meeting.language`); o `gen:types` regenerou.
+- **Rótulo curto na caixa + detalhe no painel** (2026-08-03) — `ProcessNode`
+  ganhou `detail`. O `name` é o rótulo curto (verbo na forma infinitiva, ~30
+  chars); o `detail` é a frase completa, lida no painel de elementos junto de
+  **todas** as evidências. O `detail` também vira `bpmn:Documentation`, então
+  sobrevive ao "Congelar versão" e viaja para outras ferramentas BPMN.
+  Regra nos **dois** prompts (extração e refino) e no `description` do schema —
+  que é o que vira a definição da ferramenta que o modelo lê.
+  **Sem `maxLength` no schema de propósito:** o Ajv usa o mesmo arquivo, então um
+  rótulo longo demais reprovaria uma geração já paga.
+- **Idioma segue o documento** (2026-08-03) — antes, `transcript-to-minutes.md`
+  forçava português e `extract-process.md` não dizia nada (indefinido). Agora
+  ambos seguem a entrada. Como os títulos da ata são escritos por código,
+  `MeetingMinutes` ganhou `meeting.language` (ISO 639-1) e
+  `src/minutesMarkdown.ts` tem dicionários PT/EN, **com fallback para PT** —
+  atas antigas sem o campo renderizam idênticas. A regra do verbo ficou neutra
+  de idioma (a 1ª versão dizia "-ar/-er/-ir", que quebraria em inglês).
+- **Logos oficiais da Alpar** (2026-08-03) — `public/brand/alpar-colorido.png`
+  (fundo claro) e `alpar-branco.png` (fundo escuro), cropados do padding.
+  O antigo `public/alpar-colorido.png` era **fora da marca** (círculos teal
+  `#17a99b` em vez do ciano oficial `#009fe3`) e foi removido. Cores oficiais:
+  marinho `#153f71`, ciano `#009fe3`. `.png` faltava no mapa MIME do dev server.
+- **Rótulos do diagrama** — `bpmndi:BPMNLabel` com bounds próprios; o "Sim"/"Não"
+  sai de cima da linha e fica junto do gateway. Coberto por teste.
+- **Tipos de nó mais ricos** — `parallel_gateway`, `timer_event`, `message_event`
+  no schema + `NODE_TYPE_TO_BPMN` (centralizado em `src/bpmnNodes.ts`) + prompt.
+- **Custo sempre à vista** — badge no header + custo da geração no resultado.
+- **Teto de uso / rate limit** — `RATE_LIMIT_PER_IP_HOUR` e
+  `RATE_LIMIT_GLOBAL_PER_DAY`, contador na tabela `rate_limit` do Postgres
+  (em serverless não dá contador em memória). O global é o que limita a fatura.
+- **Extração/refino via tool use forçado** — some o erro de JSON malformado.
+- **Modo transcrição** — transcrição crua → ata estruturada (IA) → Markdown
+  (determinístico) → pipeline normal. **Duas chamadas separadas** de propósito:
+  o especialista revisa a ata antes da segunda, e cada uma cabe nos 60s do Hobby.
+- **Suíte de testes determinística + CI** — `npm test` (`node:test`, sem
+  dependência nova) cobrindo validação, os dois compiladores, geometria do layout
+  de raias, colorização, render da ata, limpeza de texto e custo. GitHub Actions
+  roda typecheck + lint + testes + build em push e em PR pro `main`.
+- **`npm run backup`** — `pg_dump` pela `DATABASE_URL` em `backups/` (o Supabase
+  free não tem backup automático).
+- **README, Dockerfile e docs atualizados** — o README dizia SQLite e listava
+  como "fora de escopo" coisas já entregues.
 
 ---
 
-### Task 7 — Modo transcrição (transcrição → ata limpa → diagrama)  ·  IMPLEMENTADO no `dev`, falta 1 validação real 💸
-Transcrições de reunião (fala solta, ruído, encoding ruim) geram diagramas fracos.
-Agora existe um passo de **pré-processamento**: a IA lê a transcrição crua e emite
-uma **ata estruturada** (`MeetingMinutes`, via tool use forçado), que um
-renderizador **determinístico** transforma em Markdown — e é esse Markdown que
-alimenta o pipeline de diagrama.
+## 🎯 As duas falhas da ata de PO — causa e estado
 
-**Como ficou (2 chamadas de IA, uma por requisição):**
-1. `POST /api/minutes` — transcrição → ata (JSON + Markdown). **Não gera diagrama.**
-2. O especialista **revisa/corrige a ata** na tela (textarea) e clica em
-   "Gerar diagrama a partir desta ata" → `POST /api/generate` com o Markdown.
+| # | erro | causa | estado |
+|---|---|---|---|
+| 1 | `/nodes must be array` (US$ 0,19) | o modelo devolveu `nodes` **num formato errado**. O bloco `tool_use` veio certo — o log confirma. A hipótese mais forte: o documento tem **6 processos** e o schema só aceita 1, então em vez de escolher um ele **agrupou** (`{aprovacao: [...], sourcing: [...]}`) | **contornado** — `normalizarColecoes` conserta as 3 formas erradas conhecidas e avisa. Correção de verdade = **Task I** |
+| 2 | `max_tokens` (US$ 0,34) | `MAX_OUTPUT_TOKENS` era 20000 porque acima de ~21333 o **SDK** recusa chamada não-streaming. Não era limite do modelo: o Sonnet 5 faz **128000** | **resolvido** — as 3 chamadas usam `client.messages.stream()`; teto agora 64000 |
 
-Separar as duas chamadas é de propósito: o humano revisa antes de gastar a segunda,
-e cada invocação cabe no **teto de 60s do Hobby** (encadear as duas estouraria).
+**A ata de PO cabe:** ~26k estimados contra 64000. O `sizing.ts` não emite mais aviso para ela.
 
-- **UX:** duas abas na home ("Ata ou documento → diagrama" / "Transcrição → ata →
-  diagrama"), como o dono sugeriu, + tela intermediária da ata com resumo lateral
-  (fluxo detectado, contagens, pontos em aberto) e botão de baixar `.md`.
-- **Rastreabilidade:** cada item da ata carrega citação literal da transcrição
-  (com timestamp/speaker), e essas citações são renderizadas junto de cada etapa
-  do fluxo — assim a `evidence` do ProcessSpec continua apontando para a fala real.
-- **Encoding:** `src/textCleanup.ts` conserta mojibake (`ReuniÃ£o` → `Reunião`),
-  ligaduras, aspas tipográficas e caracteres invisíveis antes de gastar tokens.
-- **Custo:** a chamada da ata não vira versão de projeto, então foi criada a tabela
-  `ai_calls` no Supabase; o `GET /api/usage` agora soma versões + `ai_calls`
-  (senão o painel subestimaria o gasto da empresa).
-- **CLI:** `npm run dev -- <arquivo> --transcricao` (ata + diagrama) e `--so-ata`
-  (para na ata, 1 chamada só). Grava `<nome>.ata.md` e `<nome>.ata.json`.
+**O que ainda não está resolvido** (nenhum é erro — são escopo e custo):
 
-**Arquivos:** `schemas/meeting-minutes.schema.json`, `prompts/transcript-to-minutes.md`,
-`src/transcriptToMinutes.ts`, `src/minutesMarkdown.ts`, `src/textCleanup.ts`,
-`src/types/meeting-minutes.ts` (gerado), `api/minutes.ts`, + orchestrator,
-httpHandlers, server, store, index (CLI) e frontend.
+1. **Task I** — decidir (a) um spec com `processes[]` ou (b) uma versão por
+   processo. Enquanto não decidir, um documento multi-processo continua saindo
+   como um diagrama só, achatado. Trava F1/F2.
+2. **Subir o SDK 0.68 → 0.115** para ganhar `thinking: adaptive` e
+   `output_config.effort`. **Não conserta erro nenhum** — é alavanca de custo
+   (hoje roda em `effort: high` por omissão, o mais caro). Não gasta API, mas
+   são 47 versões de salto: fazer em commit isolado, com typecheck + testes.
+3. Só então **1 geração** com a ata de PO.
 
-**Validado só deterministicamente** (typecheck / lint / build / typecheck:vercel +
-render da ata a partir de um objeto sintético + rota `/api/minutes` respondendo).
-**Falta:** 1 rodada real 💸 com a transcrição do chefe
-(`test-documents/07-24 Reunião Semanal...-transcript.txt`) — conferir a qualidade
-da ata e o diagrama que sai dela.
+**Gasto até aqui:** US$ 2,26 em 22 chamadas, das quais **US$ 0,53 (≈23%) foram as
+duas falhas** com a ata de PO — uma por forma, outra por teto. Ambas agora têm
+guarda: `src/sizing.ts` avisa antes de gastar, e `normalizarColecoes` conserta as
+formas erradas conhecidas.
+
+**Nota de custo:** `src/pricing.ts` usa o preço de lista do Sonnet 5 (US$3/US$15).
+O promocional (US$2/US$10) vale até **2026-08-31**, então a fatura real está
+~33% abaixo do que o painel mostra. Conservador de propósito — não "consertar"
+sem decidir.
+
+---
+
+## 🔢 Ordem recomendada (atualizada 2026-08-04, fim do dia)
+
+O critério é **impacto ÷ custo**, com um desempate: o que melhora *todo* diagrama
+vem antes do que melhora *um caso*.
+
+| # | o que | custo | por que aqui |
+|---|---|---|---|
+| **0** | **Commitar os 5 blocos prontos no `dev`** | minutos | Estão testados e fora do git. Risco puro, ganho zero em esperar |
+| **1** | **L1 · rótulos empilhados** | ~1h, sem API | Afeta **todo** diagrama, inclusive os perfeitos. É o que faz a saída parecer amadora. 14 pares sobrepostos num diagrama sem defeito nenhum |
+| **2** | **L2 · órfão fora da camada 0** | ~2h, sem API | Tira o efeito dominó (6 setas a menos ≠ desenho destruído). **Pré-requisito do chunking** |
+| **3** | **M1 · integridade referencial no prompt** | ~15min, sem API | Mira o escorregão que aconteceu **2 de 2 vezes**. Mais barato do dia |
+| **4** | **Task K · chunking** | dias | É o que faz documento real funcionar — e o único caminho para esse tipo de ata rodar no Vercel (hoje só local) |
+| **5** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
+| **6** | **Task A · repo privado** | minutos | Não é qualidade, é exposição: código da empresa em repo público, aberto desde o começo |
+| 7 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
+| 8 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
+
+**Por que 1 e 2 antes do chunking:** são horas contra dias, não gastam API, e
+valem para todo diagrama que o projeto já produz. O chunking é mais importante
+*em ambição*, mas 1–3 melhoram o que você mostra na tela **hoje**, e o 2 é
+pré-requisito dele de qualquer forma.
+
+**Decisão pequena ainda aberta:** idioma das `unresolved_questions`. Hoje o
+diagrama sai 100% no idioma do documento e as perguntas saem em português. Ou é
+bug (a regra diz "tudo no idioma do documento") ou é o comportamento certo (as
+perguntas são para o especialista, não para o cliente). A recomendação é
+**mudar a regra**, não a saída — o que incomoda é a contradição.
+
+## Pendências
+
+> **As letras são só rótulos, não ordem.** A→E são as pendências antigas
+> (pequenas e independentes). **I, F, G e H nascem da ata de PO** e estão nessa
+> ordem de propósito: a **I** é decisão de formato e precisa vir antes da **F**.
+> Juntas elas são **escopo de uma fase nova**, não o fim da Fase 2 — vale tratar
+> como conversa de prazo, não como algo que entra no meio das outras.
+
+### 💸 Validações reais (as únicas que gastam API) — **fazer antes de ir pra PROD**
+Tudo abaixo já passou em validação determinística; falta a rodada real.
+
+1. **Tool use na extração** — 1 geração com a **ata de mudanças emergenciais**
+   (fluxo feliz) e 1 com a **transcrição bagunçada** (o caso que quebrava).
+2. **Modo transcrição** — 1 rodada com a transcrição do chefe
+   (`test-documents/07-24 Reunião Semanal...-transcript.txt`): conferir a
+   qualidade da ata e o diagrama que sai dela.
+3. **Rótulo curto + idioma** — 1 geração com a ata de PO em inglês
+   (`~/Downloads/ata_teste_automacao_PO.md`). Já verificado sem gastar API:
+   arquivo **sem mojibake**, `looksLikeTranscript: false` (usar **modo normal**,
+   não `--transcricao`), ~6,5k tokens de entrada.
+   **Rodar LOCAL** (`npm run dev -- <arquivo>`): a saída pode passar de 100s a
+   ~130 tokens/s e o Hobby corta em 60s. Olho no teto de `maxOutputTokens`
+   (20000) — se estourar, a chamada falha **depois** de queimar os tokens.
+   **Como ler o resultado:** muitas `unresolved_questions` são **sucesso** — é o
+   comportamento correto para o que a Task F ainda não cobre. Um diagrama limpo
+   *sem* perguntas em aberto seria o sinal ruim (lacunas silenciadas).
+   Bom resultado = rótulos em inglês, verbo primeiro, curtos (`Check budget`);
+   eventos como substantivo; gateways como pergunta; valores e SLAs no `detail`.
+
+### Task A — Repo privado  ·  sem API
+`MarcosGianoniAlpar/BPMN` está **público** e é código da empresa. Tornar privado.
+
+### Task B — Message flows entre pools  ·  sem API pra desenhar, +1 geração pra validar
+Setas tracejadas entre o processo interno e os pools externos. O `ProcessSpec`
+**não liga nó ↔ participante externo** hoje (flows são só nó→nó). Precisa:
+- `message_flows` no `schemas/process-spec.schema.json` (`{ id, source, target, name }`)
+  + `npm run gen:types`;
+- ensinar `prompts/extract-process.md` e `refine-process.md` a preenchê-los;
+- desenhar `bpmn:MessageFlow` no `src/laneLayout.ts`.
+
+**Validar:** desenho com spec sintético em `test/fixtures.ts` (grátis) primeiro;
+extração real só com aprovação.
+
+### Task J — Streaming nas chamadas de IA  ·  sem API pra escrever
+
+**Sintoma real (2026-08-03):** a ata de PO estourou `max_tokens` —
+`14104 + 20000 tokens · US$ 0,34 COBRADOS · resposta cortada`. Estourar o teto é
+a **pior** falha possível: cobra tudo e devolve nada, porque o JSON da ferramenta
+vem partido no meio. Duas rodadas nesse documento custaram ~US$ 0,53 sem sair
+diagrama.
+
+**De onde vem cada limite** (confirmado na referência da API, não de memória):
+
+| limite | valor | origem |
+|---|---|---|
+| `MAX_OUTPUT_TOKENS` | 20000 | **escolha nossa**, em `src/config.ts` |
+| teto sem streaming | ~21333 | **do SDK**, não do modelo: ele recusa chamadas não-streaming que estima levarem >10 min |
+| **máximo real do Sonnet 5** | **128 000** | do modelo |
+| janela de contexto | 1M | do modelo |
+
+Ou seja: **o modelo aguenta 6,4× o que estamos pedindo.** O que trava é a chamada
+ser não-streaming. Subir `MAX_OUTPUT_TOKENS` sem streaming não adianta (ganha 6%);
+**com** streaming o teto vai a 128k e a ata de PO (~28k estimados) passa folgada.
+A recomendação oficial para requisições com saída longa é justamente streaming —
+ele existe para evitar o timeout de HTTP, não só para mostrar progresso.
+
+Precisa: migrar `extractProcessSpec`, `refineProcessSpec` e `transcriptToMinutes`
+para `client.messages.stream()` + `.finalMessage()`, que devolve a mensagem
+completa — não é preciso tratar evento por evento nem remontar o `tool_use` na
+mão. Atenção: o handler HTTP já faz streaming NDJSON do **progresso** para o
+navegador — são coisas diferentes e não se misturam.
+
+**Não resolve o tempo de parede:** 148s numa rodada, e o Vercel Hobby corta em
+60s. Streaming destrava o tamanho, não o relógio — documento grande continua
+exigindo execução local (ou plano Pro).
+
+**Dois achados vizinhos, da mesma consulta:**
+
+1. **`thinking: 'disabled'` tem um modo de falha documentado**, mas ele **NÃO
+   explica o erro de 21:01.** Com o thinking desligado o modelo às vezes escreve
+   a chamada da ferramenta **como texto**, sem emitir o bloco `tool_use` — é o
+   que `src/extractProcessSpec.ts` já comenta ter visto. Mas o log de 21:01 diz
+   `veio por tool_use`, ou seja, o bloco **existia**; o problema era o tipo de
+   `nodes` dentro dele. São falhas diferentes. (A referência documenta esse modo
+   para o Opus 5; no Sonnet 5 `disabled` é aceito sem ressalva.)
+2. **`effort` nunca foi configurado**, e o padrão é `high`. Existe
+   `low`/`medium`/`high`/`xhigh`/`max`; `low` e `medium` rendem bem no Sonnet 5.
+   É a alavanca de **custo** mais direta que temos e está intocada — mas é
+   otimização, não correção de erro.
+
+**Ambos exigem subir o SDK.** O instalado é `@anthropic-ai/sdk@0.68.0`, que não
+conhece `adaptive` nem `output_config`/`effort` (nem nos tipos nem no código); o
+mais recente é 0.115.0. O streaming, esse, já existe no 0.68 — foi feito sem
+upgrade.
+
+**Mitigação já no ar:** `src/sizing.ts` estima a saída antes de gastar e avisa na
+confirmação (CLI e app) quando o documento provavelmente estoura. É aviso, não
+bloqueio.
+
+### Task C — Migrations  ·  sem API
+Hoje não há migration formal: o schema nasce de `CREATE TABLE IF NOT EXISTS` no
+`src/store.ts` + `ALTER` pontuais. Montar esquema leve: pasta `migrations/` com
+SQL numerado (`001_init.sql`), tabela `schema_migrations` e `npm run migrate`.
+**Bom momento:** quando a Task B precisar mexer no banco.
+
+### Task D — Agendar o backup  ·  sem API
+`npm run backup` existe, mas ninguém o executa sozinho. Agendar no PC do dono
+(Agendador de Tarefas do Windows) e guardar uma cópia fora do Supabase.
+**Nota:** o script ainda **não foi executado ponta a ponta** — falta o `pg_dump`
+instalado na máquina (o script detecta e diz como instalar).
+
+### Task E — Prettier  ·  sem API
+`npm run format:check` reprova ~33 arquivos: o script existe mas nunca foi
+enforçado. Rodar `npm run format` **num commit isolado** (o diff é grande e
+ruidoso) e só então adicionar `format:check` ao CI.
+
+### Task L — Dois bugs de layout  ·  sem API  ·  **achados olhando o PNG, não o log**
+
+Nenhum dos dois aparece em log nenhum: `npm test`, bpmnlint e o pipeline todo
+passam verdes. Só apareceram quando o desenho foi olhado como imagem. Lição de
+processo: **exportar o PNG faz parte de validar**, não é enfeite.
+
+**L1 · Rótulos de aresta empilhados — afeta TODO diagrama, inclusive os perfeitos.**
+Medido no diagrama bom (o do CLI, sem defeito nenhum): **16 rótulos, 14 pares
+sobrepostos**. As saídas `f8`, `f9` e `f10` do mesmo gateway saem todas em
+`y=385`. É o `"$5,000.01–$50,000"` impresso por cima do `"Above $50,000"`.
+Causa: `edgeLabel()` em `src/laneLayout.ts` posiciona o rótulo no primeiro
+trecho depois da origem. Foi escrito para `Sim`/`Não` — duas saídas em alturas
+diferentes. Com 3+ ramos saindo do mesmo ponto, os rótulos caem no mesmo lugar.
+Fix: empilhar os rótulos do mesmo gateway, deslocando cada um em
+`EDGE_LABEL_H + folga`. Teste: contar pares sobrepostos nas fixtures — hoje
+daria 14, tem de dar 0.
+
+**L2 · Nó órfão cai na camada 0 e empilha na extrema esquerda.**
+`computeLayers()` semeia a partir dos `start_event`; quem não é alcançável cai
+em `layer 0` (`laneLayout.ts`, "Nos desconectados ... vao para a camada 0"), que
+é a coluna da ponta esquerda. Quando um fluxo descartado era a **ponte** para o
+resto do processo, TUDO a jusante vira órfão de uma vez: na rodada real, ~19 nós
+empilhados numa coluna só. **O estrago visual é ~3× o semântico** — 6 setas a
+menos deixam o desenho irreconhecível. Reproduzido cortando a ponte num spec
+salvo: a coluna mais cheia salta de 9% para 30% das formas (e a rodada real foi
+pior).
+Fix: segunda passada — derivar a camada do órfão dos vizinhos que sobraram
+(`predecessor + 1` ou `sucessor − 1`), iterando até estabilizar; só o que não
+tiver vizinho nenhum vai para 0.
+**É pré-requisito do chunking:** com N chamadas, pedaço desconectado passa a ser
+comum, não excepcional.
+
+### Task M — Fechar o laço: integridade referencial e refino  ·  M1 sem API
+
+**M1 · Regra de integridade no prompt — grátis, mira o erro mais frequente.**
+Duas de duas falhas de modelagem do dia caíram no MESMO lugar: a cadeia de
+aprovação por faixa de valor (§3.1). O modelo tenta encadear ("precisa do
+Finance? precisa do CFO?"), cria gateways intermediários, escreve os fluxos para
+eles e **não os declara** em `nodes` (`gw_finance_needed`/`gw_cfo_needed` numa
+rodada, `gw_value_tier_check`/`check2` na outra). Não é ruído: é um ponto
+sistematicamente ambíguo do documento. Regra a acrescentar:
+> Antes de emitir a ferramenta, confira: todo `source` e todo `target` de
+> `flows` tem de ser o `id` de um nó existente em `nodes`. Gateway intermediário
+> que você criar precisa estar na lista de nós.
+
+**M2 · Realimentar os avisos no refino.** Os avisos da validação já são
+perguntas bem-formadas ("você referenciou `X` mas não o declarou"). O
+`refineProcessSpec` já sabe receber esclarecimento e devolver o spec revisado —
+falta ligar uma coisa na outra. Transforma um diagrama com 9 erros num diagrama
+correto, com uma chamada pequena e cirúrgica. **Custa 1 chamada quando dispara.**
+
+### Task K — Chunking: uma extração por processo  ·  **decidida e validada em 2026-08-04**
+
+**Nasce da Task I e é o que faz a ata de PO funcionar.** Só existia na conversa;
+registrado aqui para não se perder.
+
+**A evidência que decidiu:** a ata inteira (6 processos) falhou **3/3** — sempre
+com `nodes` virando string e `flows` vazio, e com o modelo desistindo cada vez
+mais cedo (13.255 → 9.036 → 5.972 tokens de saída, contra um teto de 64.000). O
+recorte das §2–5 (**um** processo, `test-documents/ata-PO-secoes-2-5.md`) saiu
+inteiro: 33 nós, 39 fluxos, 7 raias, 0 erros de lint, **9.935 tokens** — *mais*
+saída que qualquer uma das falhas. Não é volume de tokens: é o modelo perdendo a
+saída estruturada quando tem seis processos para segurar num spec singular.
+
+**O corte é por processo, não por tamanho.** Fatiar por bytes cria o problema
+difícil (fluxos atravessando o corte, ids colidindo). Por processo, as
+referências cruzadas viram **call activity** — uma referência por id, não uma
+costura de geometria. Na ata: §2–5 / §6,8,9 / §7 / §10–12 / §13 / §14.
+
+Ordem, e o que gasta:
+
+1. `processes[]` no schema + `gen:types` — sem API, sem migração (`jsonb`)
+2. `call_activity` como tipo de nó (é a **F2**) — sem API, **zero geometria**:
+   caixa de tarefa com `isExpanded: false` na DI
+3. Merge determinístico — concatena por processo, deduplica `lanes` e
+   `participants` por nome. Sem API, testável em `test/fixtures.ts`
+4. **Chamada de índice**: documento → lista de processos com faixas de seção.
+   Saída de ~500 tokens, sem risco de degradar. **1 chamada pequena**
+5. Uma extração por processo, cada uma com seu trecho + os ids das outras. **N chamadas**
+6. Tela: navegação entre diagramas; "Congelar versão" congela o conjunto
+
+**Pré-requisito, não polimento:** a validação reparável (ver Concluído). Com 6
+chamadas em vez de 1, se qualquer escorregão abortar tudo, a chance de todas
+passarem despenca — chunking com validação fatal fica **pior** que hoje.
+
+**Ganho além de funcionar:** a chamada única leva 50–97s e o Hobby corta em 60.
+Este documento hoje **só roda local**. Com chunks de ~25 nós, cada chamada cabe.
+
+**Não resolve:** F3 (boundary events — os SLAs da §3.3 continuam virando
+pergunta) nem F5 (multi-instância). E `unresolved_questions` vão continuar
+aparecendo — é o comportamento certo.
+
+### Task I — Um documento → VÁRIOS processos  ·  sem API  ·  **a mais estrutural**
+
+**O problema que a Task F não resolve.** F trata de tipos de nó que faltam. Este
+é o formato do spec: o `ProcessSpec` é **singular** — um `process`, um conjunto
+de `nodes`, um de `flows`. **Um documento = um diagrama.**
+
+A ata de PO descreve **seis** processos distintos, cada um com gatilho e estados
+terminais próprios: (1) requisição→aprovação, (2) sourcing→emissão do PO,
+(3) compras internacionais, (4) entrega→three-way match→pagamento,
+(5) auditoria de compliance, (6) logística reversa/RMA. A §15 lista **sete**
+estados terminais só para um item de linha.
+
+Como o prompt manda "exatamente um `start_event`" (o validador é mais frouxo:
+`src/validate.ts` exige só **pelo menos um**), o modelo vai espremer tudo numa
+raiz só. Resultado esperado: ou escolhe uma linha e ignora o resto, ou funde
+tudo num diagrama monstruoso. **Isso não se conserta adicionando tipo de nó.**
+
+Precisa decidir a forma:
+- **(a) Um spec com `processes[]`** — o principal referencia os demais via
+  chamada (é o mesmo mecanismo do subflow da F2). **Recomendado:** cabe no
+  `jsonb`, então **migração no banco: nenhuma**, e mantém "um documento = um
+  projeto = uma versão congelável".
+- **(b) Cada processo vira sua própria versão/diagrama** — aí sim mexe no banco
+  e no modelo projeto→versões, e "congelar versão" fica ambíguo (congela qual?).
+
+Ramificações além do schema: qual diagrama a tela mostra e como se navega entre
+eles; o que o "Congelar versão" congela; e como o relatório PDF (Backlog) pagina
+vários diagramas. **Decidir (a) vs (b) antes de F1/F2** — a escolha muda as duas.
+
+### Task F — Cobertura BPMN que um processo real exige  ·  sem API pra desenhar
+
+**Por que existe:** a ata de PO em inglês (`~/Downloads/ata_teste_automacao_PO.md`,
+gerada para teste) pede cinco construções que o subset atual não tem. Hoje o
+prompt manda registrar em `unresolved_questions` e "modelar o que der" — o
+resultado é degradação **silenciosa**:
+
+| o documento pede | o que sai hoje | risco | estado |
+|---|---|---|---|
+| sub-processo | achatado inline | diagrama gigante, some a hierarquia | F2 — **trava na Task I** |
+| timer de fronteira ("sem resposta em 4h → escala") | `tarefa → gateway → timer` | **muda a semântica**: interrupção virou verificação sequencial | F3 — pendente |
+| gateway inclusivo (nº variável de ramos) | `parallel` ou `exclusive` | se paralelo, **o join trava**; o bpmnlint não pega | **✅ F4 (2026-08-04)** |
+| multi-instância (1 requisição → N POs filhos) | achatado num caminho só | perde "fecha o pai quando todos terminarem" | F5 — **trava na Task I** |
+| "first response wins" | provavelmente `exclusive` | perde a corrida e o cancelamento | **✅ F6 (2026-08-04)** |
+
+O pior é o **inclusivo**: sai um diagrama que parece certo e está errado.
+
+**Reordenação (2026-08-04), depois de ler o código com a ata na mão.** O critério
+que separa os itens não é "schema vs. layout", é **se mexem na geometria**:
+
+- **Sem geometria nova** (gateway é losango, `call activity` é caixa de tarefa,
+  multi-instância é só um marcador `|||` que o bpmn-js desenha sozinho a partir
+  de `bpmn:MultiInstanceLoopCharacteristics`): F4, F6 — feitos —, e F2/F5, que
+  só esperam a decisão da Task I. **A F5 é bem mais barata do que esta lista
+  dizia**: o caro nela é a semântica pai→filho, que é a mesma coisa da F2.
+- **Com geometria nova**: só a **F3**, que precisa ancorar o evento na borda da
+  tarefa e é a única que exige mexer no `laneLayout`. Continua sendo a mais cara.
+
+Dois achados que baixam o custo estimado da F3 e da F2:
+
+1. O **`bpmn-auto-layout` já sabe** posicionar boundary events e desenha
+   sub-processo colapsado (confirmado no `dist` e nas "Limitations" do README).
+   Ou seja, o **caminho sem raias sai de graça** nas duas — só o `laneLayout.ts`
+   precisa de código.
+2. A F3 vai esbarrar numa regra de validação existente: `src/validate.ts` exige
+   fluxo de entrada para **todo** nó que não seja `start_event`, e um boundary
+   event **não tem** fluxo de entrada. Sem isentá-lo, toda geração com boundary
+   reprova **depois de paga**. É o gotcha mais caro de esquecer nessa task.
+
+Ordem sugerida — por valor no ServiceNow (Task G) dividido pelo custo:
+
+1. **F1 · Trigger no start event** — hoje `start_event` é só um nome. Ganhar
+   `trigger: { type, condition }` (`record_created`, `record_updated`,
+   `scheduled`, `catalog_request`, `inbound_email`). É o conceito **mais central
+   do Flow Designer** e o mais barato: schema + prompt, desenho não muda.
+2. **F2 · Subprocesso — começar pelo COLAPSADO.** Uma caixa com `+` que aponta
+   para outro diagrama. Bem mais barato que expandido (não mexe no `laneLayout`,
+   que teria de aninhar geometria) e é **exatamente** o que um Subflow é: um
+   fluxo separado. Expandido, se um dia precisar, vem depois.
+3. **F3 · Boundary events (timer e erro) na tarefa** — os SLAs da ata (4h, 8h,
+   24h, 48h, 30 dias) são todos isso. Exige âncora do evento na borda da tarefa
+   no layout — o item mais caro em geometria desta task.
+4. ~~**F4 · `inclusive_gateway`**~~ — **feito em 2026-08-04.**
+5. **F5 · Multi-instância (pai → filhos)** — o padrão REQ→RITM→SCTASK. O de maior
+   valor de negócio. Em BPMN é `bpmn:MultiInstanceLoopCharacteristics` como filho
+   da atividade, e o marcador `|||` é desenhado pelo bpmn-js — **zero geometria**.
+   O que custa é a semântica pai→filho, que é a mesma da F2: faça as duas juntas,
+   depois da Task I.
+6. ~~**F6 · Gateway baseado em evento**~~ — **feito em 2026-08-04.** Foi junto da
+   F4 por ser do mesmo lote barato, e não por ter aparecido de novo.
+
+Faltavam na 1ª versão desta lista, e a ata de PO pede os quatro:
+
+7. **F7 · `business_rule_task`** — a matriz de aprovação ($5k/$50k), o algoritmo
+   de ranking de fornecedor (preço 60% / prazo 30% / qualidade 10%) e a
+   tolerância de ±2% do three-way match **não são tarefas humanas nem de
+   sistema**: são regras. No ServiceNow isso é **Decision Table**, então tem
+   contraparte direta — deveria subir na ordem, provavelmente logo após F1.
+8. **F8 · Data objects** — PO, Goods Receipt Note, Supplier Invoice, RMA, pacote
+   de documentação de importação. O three-way match é **literalmente** reconciliar
+   três documentos; sem objeto de dado, o diagrama não mostra o que é conciliado.
+9. **F9 · Contadores de laço** — "máximo de duas revisões", "até três tentativas
+   de sourcing", "três falhas de compliance em 12 meses". O laço em si já é
+   desenhável; o **contador** não é expressável hoje.
+10. **F10 · End events tipados** (terminate / error / cancel) — a §15 lista sete
+    estados terminais de naturezas diferentes (cumprido, cancelado pelo
+    solicitante, rejeitado por orçamento, sourcing falhou...), e ainda um
+    **não-terminal** ("Blocked — Compliance Hold"). Hoje todos viram o mesmo
+    círculo, e a diferença some.
+
+**Cada item precisa dos mesmos 4 passos:** `schemas/process-spec.schema.json` +
+`npm run gen:types` → os dois prompts → `src/bpmnNodes.ts` **e** os dois
+compiladores (`compiler.ts` e `laneLayout.ts`) → teste em `test/fixtures.ts`.
+O teste "todo tipo do schema tem tradução para BPMN" (`test/compiler.test.ts`)
+já guarda contra ensinar o tipo ao prompt e esquecer de desenhá-lo.
+
+**Validar:** desenho com spec sintético (grátis) antes de qualquer geração real.
+
+### Task G — Vocabulário ServiceNow no prompt  ·  sem API pra escrever
+
+**O destino é sempre o ServiceNow**, então o extrator deveria reconhecer os
+conceitos da plataforma em vez de tratá-los como texto qualquer. Equivalência:
+
+| BPMN | ServiceNow |
+|---|---|
+| trigger do start event | **Trigger** (record created/updated, scheduled, catalog request, inbound email) |
+| subprocesso | **Subflow** |
+| boundary timer + escalonamento | **SLA / Wait for duration** + escalation |
+| multi-instância pai→filhos | **REQ → RITM → SCTASK** |
+| user task / aprovação | **Approval** (com delegação = o caso "out-of-office") |
+| service task | **Action** (Integration Hub / spoke) |
+
+Não é da ata do PO por acaso: ela descreve o modelo de request do ServiceNow —
+requisição pai com vários itens, cada um no seu caminho, o pai fechando quando
+todos terminam.
+
+**É a melhor relação valor/custo do momento:** é edição de `.md`, sem mexer em
+schema nem em layout. Fazer **antes** ou junto de F1/F2, para que o vocabulário
+já esteja lá quando os tipos novos chegarem.
+
+**Em aberto:** manter o `ProcessSpec` puro-BPMN (recomendado — a plataforma é
+detalhe de destino, não de modelagem) ou dar a ele um campo de anotação
+ServiceNow por nó. Decidir antes de F1.
+
+### Task H — `language` no `ProcessSpec`  ·  sem API
+A `MeetingMinutes` registra o idioma; o `ProcessSpec` **não**. No modo normal
+(documento → diagrama direto) nada diz em que idioma o spec está. Isso trava a
+exportação traduzida do Backlog: sem o campo, você gastaria uma chamada só para
+descobrir que o spec já estava em inglês. Schema + `gen:types` + regra no prompt.
+**Migração no banco: nenhuma** — `process_spec` é `jsonb`.
+
+---
 
 ## Backlog (quando der)
 
-- **Otimizar geração pra folga no timeout** (se aparecer 504 em doc grande): baixar
-  `MAX_OUTPUT_TOKENS`, enxugar prompt.
-- **Limpar caracteres estranhos** da extração de PDF (ex.: `Ata de Reuni��o` — fonte
-  do título sem mapeamento Unicode; pós-processamento cosmético em `documentLoader.ts`).
-- **Confirmar streaming NDJSON** no Vercel (a barra de progresso ao vivo funciona ou
-  o Vercel bufferiza? — o diagrama chega de qualquer forma).
-- **Restaurar lint no serverless** (hoje pulado; `min-dash` só-ESM quebra o `require`
-  no runtime do Vercel — fixar `min-dash` numa versão com build CJS via `overrides`).
-- **Validar visual completo:** raias limpas, edição + "Congelar versão", export
-  PNG/SVG colorido.
+- **Seletor de idioma na exportação** — gerar o diagrama em inglês pro cliente e
+  em português pro time. **Em aberto.** A recomendação: traduzir **na
+  exportação**, não guardar uma segunda versão. Motivo: duas extrações
+  independentes do mesmo documento produzem processos *estruturalmente*
+  diferentes (contagem de nós, decisões), e você mostraria ao cliente um processo
+  diferente do que o time executa — em silêncio. Traduzir depois da extração
+  mantém `id`, fluxos e geometria idênticos: duas renderizações de **um** processo.
+  Ruim mesmo assim: a `evidence` **não** pode ser traduzida (é rastreabilidade
+  literal), então um diagrama em inglês carrega citações no idioma original.
+  Depende da Task H. Só precisaria de tabela nova se quisermos **cache** da
+  tradução — otimização, não requisito.
+- **Relatório final em PDF (BPMN + etapas + prints da reunião via Microsoft
+  Graph)** — proposta escrita em `docs/relatorio-pdf-graph.md`, **parada por
+  decisão**: arquitetura não fechada. Dois itens valem começar mesmo parados,
+  porque são tempo de calendário e não de desenvolvimento: (a) pré-requisitos de
+  tenant (consentimento de admin, permissões, **Application Access Policy** — dá
+  403 mesmo com tudo concedido no portal) e (b) o spike de CORS/codec, único item
+  capaz de invalidar o desenho.
+- **`/api/health`** — checar banco + config sem disparar uma geração paga.
+- **Link compartilhável de projeto** (`/?project=<id>`) — duas pessoas
+  contribuindo no mesmo diagrama via versões. É o passo (a), leve, e encaixa no
+  modelo projeto→versões que já existe. (Co-edição em tempo real é pesada demais
+  pro Vercel: serverless não mantém WebSocket.)
+- **Otimizar geração pra folga no timeout** (se aparecer 504 em doc grande):
+  baixar `MAX_OUTPUT_TOKENS`, enxugar prompt.
+- **Limpar caracteres estranhos** da extração de PDF (`documentLoader.ts`).
+- **Confirmar streaming NDJSON** no Vercel (a barra de progresso ao vivo funciona
+  ou o Vercel bufferiza? — o diagrama chega de qualquer forma).
+- **Restaurar lint no serverless** (hoje pulado; `min-dash` só-ESM quebra o
+  `require` no runtime do Vercel — fixar via `overrides`).
 - **OCR** para PDF escaneado (fase futura).
-
-## Ideia maior — Diagrama compartilhado / colaborativo (discutir alvo antes)
-Objetivo: **duas pessoas contribuírem** no mesmo diagrama. Níveis:
-- **(a) Link compartilhável de projeto salvo** — URL `/?project=<id>` que abre um
-  projeto do Supabase; ambos veem/editam e salvam **versões**. Leve, encaixa no
-  modelo projeto→versões que já existe. **Recomendado começar por aqui.**
-- **(b) Colaboração por versões com identidade** — registrar **quem** fez cada versão.
-- **(c) Co-edição em tempo real** — presença + merge simultâneo. **Pesado e com
-  atrito no Vercel** (serverless não mantém WebSocket): exigiria Supabase Realtime /
-  Liveblocks / Ably + CRDT (Yjs) no bpmn-js. Provavelmente fora do escopo atual.
 
 ---
 
@@ -210,30 +640,27 @@ Objetivo: **duas pessoas contribuírem** no mesmo diagrama. Níveis:
 - `src/httpHandlers.ts` — núcleo HTTP compartilhado (dev local + funções Vercel).
 - `src/server.ts` — servidor do dev local (`npm run web`).
 - `api/*.ts` — funções serverless do Vercel (importam de `../dist/*.js`).
-- `src/store.ts` — persistência Supabase/Postgres (async); `getUsageReport()`.
-- `src/laneLayout.ts` — layout com raias/pools (onde ficam Tasks 1, 4).
+- `src/store.ts` — persistência Postgres; `getUsageReport()`, `reserveAiCall()`.
+- `src/config.ts` — config via `.env` (modelo, tokens, rate limit).
+- `src/laneLayout.ts` — layout com raias/pools (onde fica a Task B).
+- `src/bpmnNodes.ts` — tipo do spec → elemento BPMN, **em um lugar só**.
 - `src/bpmnColor.ts` — colorização da DI (paleta Alpar).
-- `schemas/process-spec.schema.json` — schema do ProcessSpec (Tasks 4, 5).
-- `schemas/meeting-minutes.schema.json` — schema da ata estruturada (Task 7).
-- `src/transcriptToMinutes.ts` / `src/minutesMarkdown.ts` — modo transcrição
-  (chamada de IA e render determinístico da ata).
-- `src/textCleanup.ts` — mojibake e caracteres invisíveis.
-- `prompts/` — prompts da IA (extract-process.md, refine-process.md,
-  transcript-to-minutes.md).
-- `public/` — frontend (index.html, app.js, styles.css).
-- `vercel.json` — `framework:null`, `outputDirectory:public`, `includeFiles`
-  (empacota `@napi-rs/canvas` e o build do `pdfjs`).
+- `schemas/*.schema.json` — ProcessSpec e MeetingMinutes (fonte da verdade).
+- `test/fixtures.ts` — specs sintéticos; **valide desenho aqui antes de gastar API**.
+- `.github/workflows/ci.yml` — CI.
+- `scripts/backup-db.mjs` — backup do Postgres.
 
 ### Comandos
 ```bash
 npm run web                             # app local (http://localhost:3000)
+npm test                                # suíte determinística — NÃO gasta API
 npm run dev -- <arquivo>                # CLI — GASTA API (pedir ok antes)
 npm run dev -- <arquivo> --transcricao  # transcrição → ata → diagrama (2 chamadas 💸)
 npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada 💸)
-npm run eval                            # avaliação — GASTA API (pedir ok antes)
-npm run typecheck && npm run lint && npm run build
+npm run typecheck && npm run typecheck:test && npm run lint && npm test
 npm run typecheck:vercel                # valida as funções serverless em api/
-npm run gen:types                       # regenera tipos dos schemas (Tasks 4, 5, 7)
+npm run gen:types                       # regenera tipos dos schemas
+npm run backup                          # dump do Postgres em backups/
 ```
 
 ## Histórico do deploy (gotchas já resolvidos — não repetir)
@@ -242,10 +669,10 @@ npm run gen:types                       # regenera tipos dos schemas (Tasks 4, 5
   Como `thinking.display` é `"omitted"` por padrão, os blocos vêm vazios e o gasto
   fica invisível. Sintoma: a chamada "dá certo", consome milhares de tokens de saída
   e devolve um objeto quase vazio — ou estoura `max_tokens` sem produzir nada.
-  Solução: `thinking: { type: 'disabled' }` nas chamadas de extração estruturada
-  (ata, extração e refino do ProcessSpec) — são tool use forçado, pensar só consome
-  orçamento e tempo. Se um dia quiser thinking de volta, dimensione o `max_tokens`
-  para os dois.
+  Solução: `thinking: { type: 'disabled' }` nas chamadas de extração estruturada.
+- **`MAX_OUTPUT_TOKENS` tem teto duro de 21333**: acima disso o SDK recusa a
+  chamada não-streaming na hora ("Streaming is required for operations that may
+  take longer than 10 minutes"). Com 32000, toda chamada morria em 2ms.
 - Preset "Node" rodava `public/app.js` como função (`document is not defined`) →
   `"framework": null` no `vercel.json` (preset Other).
 - Upload com acento no nome (`non ISO-8859-1`) → `encodeURIComponent` no cliente +
@@ -255,4 +682,7 @@ npm run gen:types                       # regenera tipos dos schemas (Tasks 4, 5
 - PDF `DOMMatrix is not defined` → dep `@napi-rs/canvas` + `includeFiles`.
 - PDF `Cannot find module pdf.worker.mjs` → `includeFiles` do build legacy do pdfjs.
 - Colorização: NÃO usar `xml:{tagAlias:'lowerCase'}` na extensão moddle de cor
-  (serializa `bpmndi:bPMNShape` com case errado e quebra o render).
+  (serializa `bpmndi:bPMNShape` com case errado e quebra o render). **Coberto por
+  teste agora** (`test/bpmnColor.test.ts`).
+- `pg_dump` **não opera no pooler de transação (6543)** — o `npm run backup` troca
+  para 5432 (pooler de sessão) sozinho.

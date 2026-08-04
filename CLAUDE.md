@@ -22,8 +22,9 @@ carregado automaticamente como contexto; siga-o.
 - **Consultar o usuário ANTES** de rodar qualquer coisa que gaste API:
   `npm run dev -- <arquivo>`, `npm run eval`, ou testar `/api/generate` /
   `/api/refine`.
-- Testes **determinísticos** (compilador, layout, colorização, lint) **não gastam
-  API** e podem rodar livremente.
+- Testes **determinísticos** (`npm test`, compilador, layout, colorização, lint)
+  **não gastam API** e podem rodar livremente. Antes de gastar uma geração para
+  ver um desenho, tente reproduzir com um spec sintético em `test/fixtures.ts`.
 - Acompanhar custo: rota `GET /api/usage` + painel "Uso & custo" na home.
 
 ## O que é o projeto
@@ -46,13 +47,18 @@ compila **BPMN 2.0** de forma determinística. Node/TypeScript, ESM (NodeNext).
 
 ```bash
 npm run web                             # app local (http://localhost:3000)
+npm test                                # suíte determinística — NÃO gasta API
 npm run dev -- <arquivo>                # CLI — GASTA API (pedir ok antes)
 npm run dev -- <arquivo> --transcricao  # transcrição → ata → diagrama (2 chamadas)
 npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada)
 npm run eval                            # avaliação — GASTA API (pedir ok antes)
-npm run typecheck && npm run lint && npm run build
+npm run typecheck && npm run typecheck:test && npm run lint && npm test
 npm run typecheck:vercel    # valida as funções serverless em api/
+npm run backup              # dump do Postgres em backups/ (precisa de pg_dump)
 ```
+
+O CI (`.github/workflows/ci.yml`) roda typecheck + lint + testes + build em todo
+push e em PR para `main`.
 
 ## Deploy (Vercel)
 

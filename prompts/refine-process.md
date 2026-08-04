@@ -28,15 +28,47 @@ respostas do especialista à estrutura do processo.
    devem ter `evidence` com uma citação começando por
    `"Decisão do especialista: ..."`, e `confidence` no máximo `medium`.
 6. Mantenha as mesmas regras de modelagem da extração: exatamente um
-   `start_event`; ao menos um `end_event`; saídas de `exclusive_gateway` com
-   `condition`/`name`; todo nó conectado. Tipos suportados:
-   `start_event`, `end_event`, `user_task`, `service_task`,
+   `start_event`; ao menos um `end_event`; saídas de `exclusive_gateway` e de
+   `inclusive_gateway` com `condition`/`name`; todo nó conectado. Tipos
+   suportados: `start_event`, `end_event`, `user_task`, `service_task`,
    `exclusive_gateway` (caminhos alternativos, só um segue),
    `parallel_gateway` (caminhos simultâneos, todos seguem — saídas **sem**
-   condição), `timer_event` (espera por tempo) e `message_event` (espera por
-   resposta externa). Só use `parallel_gateway` se o texto disser que as coisas
-   acontecem ao mesmo tempo.
-7. **Responda chamando a ferramenta `emit_process_spec`, uma única vez.** Não
+   condição), `inclusive_gateway` (cada saída tem sua condição e seguem todas as
+   verdadeiras — o **número de ramos ativos varia por caso**),
+   `event_based_gateway` (corrida: vence o primeiro evento a ocorrer e os outros
+   ramos são cancelados), `timer_event` (espera por tempo) e `message_event`
+   (espera por resposta externa). Só use `parallel_gateway` se o texto disser que
+   as coisas acontecem ao mesmo tempo.
+
+   Duas armadilhas que a resposta do especialista costuma revelar:
+   - Se a resposta esclarecer que **um dos ramos paralelos só vale em certos
+     casos**, o gateway certo passou a ser `inclusive_gateway` (nos dois lados,
+     abertura e fechamento). Deixar `parallel_gateway` faz a junção esperar um
+     ramo que nunca rodou — **o processo trava** num desenho de aparência
+     correta. Esta é a única situação em que vale trocar o tipo de um nó que já
+     existe, mantendo o mesmo `id`.
+   - `event_based_gateway` exige **pelo menos duas saídas**, cada uma apontando
+     direto para um `timer_event` ou `message_event`, e **sem** `condition`.
+7. **Mantenha a separação entre `name` e `detail` em cada nó.** `name` é o
+   rótulo curto que aparece dentro da caixa: começa com **verbo na forma
+   infinitiva/imperativa** (PT "Confirmar", EN "Confirm" — nunca conjugado com
+   sujeito) e vai até ~30 caracteres — verbo + objeto, sem artigos, sem
+   subordinada, sem nome de pessoa. `detail` é a frase completa lida no painel,
+   com quem executa, condições e ressalvas. Exceções de `name`:
+   `start_event`/`end_event` usam substantivo ("Acessos liberados"),
+   `exclusive_gateway`/`inclusive_gateway` usam pergunta curta ("Seguiu o
+   template?") e `event_based_gateway` diz o que se espera, sem "?"
+   ("Aguardar resposta ou prazo").
+   Ao revisar um nó que já existe, **não estufe o `name`** para caber a resposta
+   do especialista — o que cresce é o `detail`.
+8. **Escreva no mesmo idioma do `<process_spec_atual>`.** O refino não é hora de
+   traduzir: se o spec veio em inglês, a revisão continua em inglês, inclusive os
+   nós e condições que você criar a partir das respostas do especialista.
+   **Estas instruções estão em português, e isso não define o idioma da saída** —
+   o idioma vem do spec que você recebeu. Um spec em inglês que volta com nós
+   novos em português é um erro, mesmo que a resposta do especialista tenha sido
+   escrita em português.
+9. **Responda chamando a ferramenta `emit_process_spec`, uma única vez.** Não
    escreva JSON em texto na resposta.
 
 ## Campos da ferramenta (use exatamente estes — não invente outros)
@@ -52,8 +84,9 @@ extra em volta (nada de `parameters`, `input` ou `process_spec`).
   "nodes": [
     {
       "id": "...",
-      "type": "start_event|end_event|user_task|service_task|exclusive_gateway|parallel_gateway|timer_event|message_event",
-      "name": "...",
+      "type": "start_event|end_event|user_task|service_task|exclusive_gateway|parallel_gateway|inclusive_gateway|event_based_gateway|timer_event|message_event",
+      "name": "rótulo curto, verbo no infinitivo, até ~30 caracteres",
+      "detail": "a frase completa, com contexto e condições",
       "lane_id": "...",
       "evidence": [ { "quote": "...", "page": 1 } ],
       "confidence": "low|medium|high"

@@ -5,8 +5,17 @@ export interface AppConfig {
   anthropicApiKey: string;
   model: string;
   maxOutputTokens: number;
+  /** Ver src/aiThinking.ts: e uma alavanca de qualidade E de custo. */
+  thinking: ThinkingMode;
   rateLimit: RateLimitConfig;
 }
+
+/**
+ * `disabled` = sem raciocinio (mais barato e mais rapido, mas a referencia da
+ * API diz que o Sonnet 5 puxa MENOS as ferramentas assim). `adaptive` = o modelo
+ * decide quanto pensar; no Sonnet 5 e o unico modo "ligado" que existe.
+ */
+export type ThinkingMode = 'disabled' | 'adaptive';
 
 /**
  * Teto de chamadas de IA. A app e publica e sem login: sem isso, quem tiver a URL
@@ -21,6 +30,21 @@ export interface RateLimitConfig {
   globalPerDay: number;
 }
 
+/**
+ * Le `AI_THINKING`. Valor desconhecido NAO cai no silencio: um typo
+ * (`AI_THINKING=enabled`, que nem existe mais no Sonnet 5) viraria "disabled"
+ * sem aviso, e o teste que se queria fazer nunca teria acontecido — depois de
+ * pagar a geracao.
+ */
+function lerThinking(valor: string | undefined): ThinkingMode {
+  if (valor === undefined || valor === '') return 'disabled';
+  if (valor === 'disabled' || valor === 'adaptive') return valor;
+  throw new Error(
+    `AI_THINKING invalido: "${valor}". Use "disabled" ou "adaptive". ` +
+      '(O modo "enabled"/budget_tokens foi removido no Sonnet 5 e devolve erro 400.)',
+  );
+}
+
 export function loadConfig(): AppConfig {
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   if (!anthropicApiKey) {
@@ -32,17 +56,23 @@ export function loadConfig(): AppConfig {
   return {
     anthropicApiKey,
     model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5',
-    // TETO DURO DE 21333: acima disso o SDK RECUSA a chamada nao-streaming, na
-    // hora, com "Streaming is required for operations that may take longer than
-    // 10 minutes" (ele estima 60min * max_tokens / 128000 e barra se passar de
-    // 10 min). Ja aconteceu: com 32000 aqui, toda chamada de IA morria em 2ms.
-    // Para passar disso seria preciso migrar as chamadas para streaming.
+    // O antigo teto de 21333 era do SDK, NAO do modelo: numa chamada
+    // nao-streaming ele recusa na hora qualquer `max_tokens` que estime levar
+    // mais de 10 min ("Streaming is required for operations that may take
+    // longer than 10 minutes"). Com 32000 aqui, toda chamada morria em 2ms.
     //
-    // 20000 fica logo abaixo do teto e sobra: a ata da transcricao inteira de 1h
-    // consumiu ~8600 tokens de saida. O limite so limita — paga-se pelos tokens
-    // gerados —, mas mais tokens = chamada mais LENTA (~130 tokens/s) e o Vercel
-    // Hobby corta em 60s. Ao mexer aqui, olhe o tempo no log [api].
-    maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS ?? '20000'),
+    // As tres chamadas de IA agora usam `client.messages.stream()`, entao esse
+    // teto sumiu — o limite passa a ser o do modelo: 128000 no Sonnet 5.
+    //
+    // 64000 e metade disso, de proposito. `max_tokens` so limita (paga-se pelos
+    // tokens gerados), mas mais tokens = chamada mais LENTA (~130 tokens/s):
+    // 64000 ja seriam ~8 min, e o Vercel Hobby corta em 60s. Documento grande
+    // roda local. Ao mexer aqui, olhe o tempo no log [api].
+    //
+    // Referencia: a ata de PO (22965 chars) foi cortada em 20000 tokens de
+    // saida; com 64000 ela cabe com folga.
+    maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS ?? '64000'),
+    thinking: lerThinking(process.env.AI_THINKING),
     rateLimit: {
       // Folgado para o especialista iterando num documento, apertado para quem
       // quiser rodar a app em loop. 0 desliga o limite.

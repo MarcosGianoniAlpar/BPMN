@@ -20,9 +20,15 @@ planeje antes.
    etapas que nao aparecem na transcricao. Limpar a fala e permitido; inventar
    conteudo, nao.
 2. **Lacuna vira `open_questions`, nao suposicao.**
-3. **Escreva em portugues limpo e impessoal.** Tire vicios de fala ("ne?", "tipo
-   assim"), repeticoes e falsos comecos. O `summary` de cada topico deve ler como
-   texto de ata, nao como transcricao.
+3. **Escreva no MESMO IDIOMA da transcricao, de forma limpa e impessoal.**
+   Transcricao em portugues -> ata em portugues; em ingles -> ata em ingles. Nao
+   traduza. Registre o idioma em `meeting.language` ("pt", "en", "es"...), porque
+   e por ele que o renderizador escolhe os titulos das secoes.
+   **Estas instrucoes estao em portugues, e isso NAO define o idioma da ata** —
+   o idioma vem da transcricao.
+   Limpo e impessoal vale em qualquer idioma: tire vicios de fala ("ne?", "tipo
+   assim", "you know", "like"), repeticoes e falsos comecos. O `summary` de cada
+   topico deve ler como texto de ata, nao como transcricao.
 4. **Corrija nomes proprios obvios do transcritor** quando o dialogo deixa claro
    (ex.: a mesma pessoa como "Bacher"/"Bacca" — escolha uma grafia e use sempre).
 

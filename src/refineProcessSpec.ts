@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
 import { PROCESS_SPEC_TOOL, readSpecFromMessage } from './extractProcessSpec.js';
+import { thinkingParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/refine-process.md');
@@ -48,17 +49,22 @@ export async function refineProcessSpec(
     `<respostas_do_especialista>\n${answersText}\n</respostas_do_especialista>`,
   ].join('\n\n');
 
-  const message = await client.messages.create({
-    model: config.model,
-    max_tokens: config.maxOutputTokens,
-    system,
-    // Ver a nota em transcriptToMinutes.ts: thinking ligado por padrao no
-    // Sonnet 5 dividiria o `max_tokens` com o ProcessSpec revisado.
-    thinking: { type: 'disabled' },
-    tools: [PROCESS_SPEC_TOOL],
-    tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
-    messages: [{ role: 'user', content: userContent }],
-  });
+  // Streaming pelo mesmo motivo da extracao (ver `extractProcessSpec.ts`): sem
+  // ele o SDK capa o `max_tokens` em ~21333, muito abaixo dos 128000 do modelo.
+  // O refino devolve o ProcessSpec INTEIRO, entao e tao grande quanto a extracao.
+  const message = await client.messages
+    .stream({
+      model: config.model,
+      max_tokens: config.maxOutputTokens,
+      system,
+      // Configuravel por `AI_THINKING` — ver src/aiThinking.ts. Nunca omitir:
+      // omitir LIGA o thinking, que dividiria o `max_tokens` com o spec revisado.
+      thinking: thinkingParam(config),
+      tools: [PROCESS_SPEC_TOOL],
+      tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
+      messages: [{ role: 'user', content: userContent }],
+    })
+    .finalMessage();
 
   return {
     raw: readSpecFromMessage(message),

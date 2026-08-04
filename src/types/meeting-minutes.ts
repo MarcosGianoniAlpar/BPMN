@@ -10,6 +10,10 @@ export interface MeetingMinutes {
      */
     title: string;
     /**
+     * Codigo ISO 639-1 do idioma em que VOCE escreveu esta ata, que e o mesmo da transcricao: "pt", "en", "es"... Serve para o renderizador escolher os titulos das secoes; se vier vazio ou desconhecido, ele usa portugues.
+     */
+    language?: string;
+    /**
      * Data como aparece na transcricao. Vazio se nao houver.
      */
     date?: string;

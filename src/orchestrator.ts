@@ -21,6 +21,12 @@ export class ProcessSpecValidationError extends Error {
      * essa geracao paga sumiria do relatorio de custo.
      */
     public readonly usage?: { inputTokens: number; outputTokens: number },
+    /**
+     * O que a IA devolveu, cru. Uma geracao paga que falha na validacao tem de
+     * deixar evidencia: sem isto, a unica pista e a mensagem de erro, e ja
+     * aconteceu de ela nao bastar para dizer o que estava errado.
+     */
+    public readonly raw?: unknown,
   ) {
     super(
       `ProcessSpec invalido (${issues.length} problema(s)):\n` +
@@ -35,6 +41,11 @@ export interface PipelineResult {
   semanticXml: string;
   layoutXml: string;
   layoutWarnings: unknown[];
+  /**
+   * Defeitos do ProcessSpec que foram consertados para o diagrama poder sair.
+   * Precisam chegar ate a tela: o especialista tem de saber onde conferir.
+   */
+  specWarnings: ValidationIssue[];
   lint: LintResult;
   usage: { inputTokens: number; outputTokens: number };
 }
@@ -71,13 +82,21 @@ async function buildDiagram(
   onProgress({ stage: 'validate', status: 'start' });
   const validation = validateProcessSpec(raw);
   if (!validation.valid) {
-    throw new ProcessSpecValidationError(validation.errors, usage);
+    throw new ProcessSpecValidationError(validation.errors, usage, raw);
   }
   const spec = raw as ProcessSpec;
+  // Os avisos vao para o progresso E para o resultado. Reparo silencioso seria
+  // pior que o aborto: o especialista veria um diagrama com uma seta a menos e
+  // acharia que a IA leu o documento assim.
+  for (const aviso of validation.warnings) {
+    onProgress({ stage: 'validate', status: 'done', detail: `aviso: ${aviso.message}` });
+  }
   onProgress({
     stage: 'validate',
     status: 'done',
-    detail: `${spec.nodes.length} nós, ${spec.flows.length} fluxos (saída da IA)`,
+    detail:
+      `${spec.nodes.length} nós, ${spec.flows.length} fluxos (saída da IA)` +
+      (validation.warnings.length ? ` · ${validation.warnings.length} aviso(s)` : ''),
   });
 
   // Duas rotas: com raias, geramos geometria ciente de lanes/pools (o
@@ -126,7 +145,15 @@ async function buildDiagram(
         : `${lint.errors} erro(s), ${lint.warnings} aviso(s)`,
   });
 
-  return { spec, semanticXml, layoutXml, layoutWarnings, lint, usage };
+  return {
+    spec,
+    semanticXml,
+    layoutXml,
+    layoutWarnings,
+    specWarnings: validation.warnings,
+    lint,
+    usage,
+  };
 }
 
 /**
