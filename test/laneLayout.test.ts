@@ -2,7 +2,13 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import BpmnModdle, { type ModdleElement } from 'bpmn-moddle';
 import { compileAndLayoutWithLanes } from '../src/laneLayout.js';
-import { specComRaias, specComLoop, specTodosOsTipos } from './fixtures.js';
+import {
+  specComRaias,
+  specComLoop,
+  specTodosOsTipos,
+  specFaixaDeValor,
+  specComPonteCortada,
+} from './fixtures.js';
 
 interface Caixa {
   x: number;
@@ -41,7 +47,39 @@ async function layout(spec: Parameters<typeof compileAndLayoutWithLanes>[0]) {
       y: p.get('y'),
     }));
 
-  return { xml, definitions, warnings, shapes, edges, bounds, waypoints, plane };
+  /** Todas as caixas de rotulo de aresta do diagrama, na ordem em que saem. */
+  const rotulos = (): { flow: string; caixa: Caixa }[] => {
+    const lista: { flow: string; caixa: Caixa }[] = [];
+    for (const [flow, edge] of edges) {
+      const b = edge.get('label')?.get('bounds');
+      if (!b) continue;
+      lista.push({
+        flow,
+        caixa: { x: b.get('x'), y: b.get('y'), width: b.get('width'), height: b.get('height') },
+      });
+    }
+    return lista;
+  };
+
+  return { xml, definitions, warnings, shapes, edges, bounds, waypoints, plane, rotulos };
+}
+
+/** Sobreposicao estrita de duas caixas: encostar nao conta. */
+function sobrepoe(a: Caixa, b: Caixa): boolean {
+  return (
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+  );
+}
+
+/** Pares de rotulos que se sobrepoem — a metrica do L1: tem de dar 0. */
+function paresSobrepostos(lista: { flow: string; caixa: Caixa }[]): string[] {
+  const pares: string[] = [];
+  for (let i = 0; i < lista.length; i++) {
+    for (let j = i + 1; j < lista.length; j++) {
+      if (sobrepoe(lista[i]!.caixa, lista[j]!.caixa)) pares.push(`${lista[i]!.flow}/${lista[j]!.flow}`);
+    }
+  }
+  return pares;
 }
 
 describe('laneLayout — estrutura', () => {
@@ -286,6 +324,68 @@ describe('laneLayout — voltas (back-edges)', () => {
   });
 });
 
+describe('laneLayout — nos orfaos (ponte cortada)', () => {
+  test('o fragmento desconectado se espalha em colunas, nao empilha na coluna 0', async () => {
+    // Regressao do L2: `computeLayers` semeava so pelos start events e jogava
+    // todo inalcancavel na camada 0 — a coluna da extrema esquerda. Como um
+    // fluxo descartado costuma ser a PONTE para o resto do processo, tudo a
+    // jusante virava orfao de uma vez: ~19 nos numa coluna so.
+    const { bounds } = await layout(specComPonteCortada());
+    assert.ok(bounds('conferir').x < bounds('registrar').x, 'registrar depois de conferir');
+    assert.ok(bounds('registrar').x < bounds('notificar').x, 'notificar depois de registrar');
+    assert.ok(bounds('notificar').x < bounds('fim').x, 'fim depois de notificar');
+  });
+
+  test('nenhuma coluna concentra mais que um terco das formas', async () => {
+    // A metrica do relatorio: cortando a ponte num spec salvo, a coluna mais
+    // cheia saltava de 9% para 30% das formas. Aqui o fragmento tem 4 dos 6
+    // nos — se caissem todos na camada 0 seriam 67%.
+    const spec = specComPonteCortada();
+    const { bounds } = await layout(spec);
+    const porColuna = new Map<number, number>();
+    for (const n of spec.nodes) {
+      const x = bounds(n.id).x;
+      porColuna.set(x, (porColuna.get(x) ?? 0) + 1);
+    }
+    const maisCheia = Math.max(...porColuna.values());
+    assert.ok(
+      maisCheia <= Math.ceil(spec.nodes.length / 3),
+      `a coluna mais cheia tem ${maisCheia} de ${spec.nodes.length} nos`,
+    );
+  });
+
+  test('orfao que APONTA para o processo fica a esquerda do seu destino', async () => {
+    // O outro sentido da propagacao: o no nao e alcancavel a partir do start,
+    // mas alimenta alguem que e. A camada dele vem de `sucessor - 1` — nao de 0,
+    // que o mandaria para a ponta esquerda do desenho, longe do que ele alimenta.
+    const spec = specComRaias();
+    spec.nodes.push({
+      id: 'anexo',
+      type: 'user_task',
+      name: 'Anexar nota fiscal',
+      lane_id: 'solicitante',
+    });
+    spec.flows.push({ id: 'f6', source: 'anexo', target: 'fim' });
+
+    const { bounds } = await layout(spec);
+    assert.ok(bounds('anexo').x < bounds('fim').x, 'anexo antes do destino');
+    assert.ok(bounds('anexo').x > bounds('inicio').x, 'anexo NAO foi jogado na coluna 0');
+  });
+
+  test('no totalmente solto (sem vizinho nenhum) continua indo para a coluna 0', async () => {
+    // O caso em que nao ha de onde derivar nada. Ele nao pode sumir nem quebrar
+    // o layout; a coluna 0 e o lugar honesto para ele.
+    const spec = specComRaias();
+    spec.nodes.push({ id: 'solto', type: 'user_task', name: 'Tarefa solta', lane_id: 'gerencia' });
+
+    // Compara o CENTRO: as caixas sao centradas na coluna, e uma tarefa (100px)
+    // e um evento de inicio (36px) na mesma coluna tem `x` diferente.
+    const { bounds } = await layout(spec);
+    const centro = (id: string): number => bounds(id).x + bounds(id).width / 2;
+    assert.equal(centro('solto'), centro('inicio'));
+  });
+});
+
 describe('laneLayout — rotulos de aresta', () => {
   test('aresta com nome ganha BPMNLabel com bounds proprios', async () => {
     // Sem BPMNLabel explicito o bpmn-js centraliza o texto NO MEIO DA SETA, por
@@ -319,6 +419,44 @@ describe('laneLayout — rotulos de aresta', () => {
       const dentro =
         p.x >= rotulo.esq && p.x <= rotulo.dir && p.y >= rotulo.topo && p.y <= rotulo.base;
       assert.ok(!dentro, `o waypoint (${p.x},${p.y}) cai dentro do rotulo`);
+    }
+  });
+
+  test('tres saidas do mesmo gateway NAO imprimem uma por cima da outra', async () => {
+    // Regressao do L1, achada olhando o PNG e nao o log: `npm test`, bpmnlint e o
+    // pipeline inteiro passavam verdes. `routeEdge` faz toda saida partir da
+    // direita da origem, na altura do centro, entao f2/f3/f4 tinham o mesmo
+    // primeiro trecho — mesmo x, mesmo y, tres rotulos no mesmo lugar.
+    const { rotulos } = await layout(specFaixaDeValor());
+    const lista = rotulos();
+    assert.equal(lista.length, 3, 'as tres saidas rotuladas precisam de rotulo');
+    assert.deepEqual(paresSobrepostos(lista), []);
+  });
+
+  test('nenhuma fixture produz par de rotulos sobreposto', async () => {
+    // A medida do L1 no diagrama real era 16 rotulos e 14 pares sobrepostos.
+    for (const [nome, spec] of [
+      ['specComRaias', specComRaias()],
+      ['specComLoop', specComLoop()],
+      ['specTodosOsTipos', specTodosOsTipos()],
+      ['specFaixaDeValor', specFaixaDeValor()],
+    ] as const) {
+      const { rotulos } = await layout(spec);
+      assert.deepEqual(paresSobrepostos(rotulos()), [], `${nome} tem rotulo sobreposto`);
+    }
+  });
+
+  test('empilhar sobe o rotulo, nunca o joga sobre a propria linha', async () => {
+    const { rotulos, waypoints } = await layout(specFaixaDeValor());
+    for (const { flow, caixa } of rotulos()) {
+      for (const p of waypoints(flow).slice(0, 2)) {
+        const dentro =
+          p.x >= caixa.x &&
+          p.x <= caixa.x + caixa.width &&
+          p.y >= caixa.y &&
+          p.y <= caixa.y + caixa.height;
+        assert.ok(!dentro, `${flow}: o waypoint (${p.x},${p.y}) caiu dentro do rotulo`);
+      }
     }
   });
 

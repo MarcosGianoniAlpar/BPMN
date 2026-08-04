@@ -96,6 +96,91 @@ export function specComLoop(): ProcessSpec {
 }
 
 /**
+ * Gateway com TRES saidas rotuladas — a cadeia de aprovacao por faixa de valor
+ * da secao 3.1 da ata de PO. Existe por causa do L1: `routeEdge` faz toda saida
+ * partir do mesmo ponto, entao com dois ramos os rotulos ainda se separavam pelo
+ * destino, mas com tres eles caiam exatamente uns por cima dos outros —
+ * "$5,000.01-$50,000" impresso sobre "Above $50,000".
+ *
+ * Em ingles de proposito: e o idioma do documento que revelou o caso, e rotulo
+ * longo (17 caracteres) e justamente o que torna a sobreposicao ilegivel.
+ */
+export function specFaixaDeValor(): ProcessSpec {
+  return {
+    process: { id: 'Aprovacao_por_faixa', name: 'Approval by value tier' },
+    lanes: [
+      { id: 'requester', name: 'Requester' },
+      { id: 'approvals', name: 'Approvals' },
+    ],
+    nodes: [
+      { id: 'inicio', type: 'start_event', name: 'Requisition submitted', lane_id: 'requester' },
+      { id: 'faixa', type: 'exclusive_gateway', name: 'Which value tier?', lane_id: 'approvals' },
+      { id: 'gestor', type: 'user_task', name: 'Approve as manager', lane_id: 'approvals' },
+      { id: 'financeiro', type: 'user_task', name: 'Approve as finance', lane_id: 'approvals' },
+      { id: 'cfo', type: 'user_task', name: 'Approve as CFO', lane_id: 'approvals' },
+      { id: 'fim', type: 'end_event', name: 'Requisition approved', lane_id: 'requester' },
+    ],
+    flows: [
+      { id: 'f1', source: 'inicio', target: 'faixa' },
+      {
+        id: 'f2',
+        source: 'faixa',
+        target: 'gestor',
+        name: 'Up to $5,000',
+        condition: 'total <= 5000',
+      },
+      {
+        id: 'f3',
+        source: 'faixa',
+        target: 'financeiro',
+        name: '$5,000.01-$50,000',
+        condition: 'total > 5000 and total <= 50000',
+      },
+      {
+        id: 'f4',
+        source: 'faixa',
+        target: 'cfo',
+        name: 'Above $50,000',
+        condition: 'total > 50000',
+      },
+      { id: 'f5', source: 'gestor', target: 'fim' },
+      { id: 'f6', source: 'financeiro', target: 'fim' },
+      { id: 'f7', source: 'cfo', target: 'fim' },
+    ],
+  };
+}
+
+/**
+ * Spec com a PONTE cortada: o fluxo `triagem -> conferir` apontava para um
+ * gateway que a IA esqueceu de declarar, e a validacao reparavel o descartou.
+ * Com uma seta a menos, TODO o resto do processo deixou de ser alcancavel a
+ * partir do start. Este e o L2 — na rodada real foram ~19 nos empilhados numa
+ * coluna so, e o estrago visual ficou ~3x maior que o semantico.
+ */
+export function specComPonteCortada(): ProcessSpec {
+  return {
+    process: { id: 'Ponte', name: 'Processo com a ponte cortada' },
+    lanes: [{ id: 'time', name: 'Time' }],
+    nodes: [
+      { id: 'inicio', type: 'start_event', name: 'Pedido recebido', lane_id: 'time' },
+      { id: 'triagem', type: 'user_task', name: 'Triar pedido', lane_id: 'time' },
+      // Daqui para a frente, nada e alcancavel a partir do start.
+      { id: 'conferir', type: 'user_task', name: 'Conferir dados', lane_id: 'time' },
+      { id: 'registrar', type: 'service_task', name: 'Registrar pedido', lane_id: 'time' },
+      { id: 'notificar', type: 'service_task', name: 'Notificar solicitante', lane_id: 'time' },
+      { id: 'fim', type: 'end_event', name: 'Pedido concluido', lane_id: 'time' },
+    ],
+    flows: [
+      { id: 'f1', source: 'inicio', target: 'triagem' },
+      // f2 (triagem -> conferir) e o fluxo que a validacao descartou.
+      { id: 'f3', source: 'conferir', target: 'registrar' },
+      { id: 'f4', source: 'registrar', target: 'notificar' },
+      { id: 'f5', source: 'notificar', target: 'fim' },
+    ],
+  };
+}
+
+/**
  * Spec que usa TODOS os tipos de no do schema. Serve para garantir que cada tipo
  * tem traducao BPMN e sobrevive a compilacao — um tipo novo adicionado ao schema
  * sem mapeamento quebra aqui, e nao no diagrama do usuario.

@@ -52,6 +52,51 @@
 
 ## ✅ Concluído (não refazer)
 
+- **Os 5 blocos de 2026-08-04 foram commitados** (2026-08-05, commit `01d5990`) —
+  eram ~1950 linhas em 35 arquivos modificados e 8 novos (`test/`, `.github/`,
+  `src/aiThinking.ts`, `src/sizing.ts`, `scripts/backup-db.mjs`, `public/brand/`)
+  vivendo só no disco. Antes do commit: typecheck + typecheck:test + lint +
+  **139 testes verdes**. Era o item 0 da ordem recomendada: risco puro.
+
+- **L1 · Rótulos de aresta empilhados** (2026-08-05) — `edgeLabel` em
+  `src/laneLayout.ts` posicionava o rótulo no primeiro trecho depois da origem,
+  e `routeEdge` faz **toda** saída partir da direita da origem na altura do
+  centro. Ou seja: o primeiro trecho de todas as saídas de um mesmo gateway é
+  idêntico. Com 2 ramos ainda dava certo; com 3+, os rótulos caíam exatamente
+  uns sobre os outros — 16 rótulos e **14 pares sobrepostos** num diagrama sem
+  defeito nenhum.
+  **A correção:** os rótulos já colocados viajam numa lista, e quem colide sobe
+  até acima do mais alto que ele encosta. Sobe, e não desce, porque logo abaixo
+  está a própria linha da seta. Só quando a pilha chega ao topo do pool a direção
+  inverte, para nada sair do desenho. Cada passo pula acima de todos os que tocou
+  (não um degrau fixo), então nenhum já resolvido volta a colidir e o laço termina
+  em no máximo um passo por rótulo posto.
+  **Por que não foi resolvido "na rota":** deslocar ao longo do trecho não cabe —
+  metade da coluna são ~80px e `"$5,000.01–$50,000"` mede ~117px. Levar o rótulo
+  para o trecho vertical (onde os destinos se separam) o jogaria para o meio da
+  aresta, que é justamente o que a decisão anterior tirou dali.
+  Coberto por 3 testes + a fixture `specFaixaDeValor()` (a §3.1 da ata de PO, em
+  inglês de propósito), e por um teste que varre **todas** as fixtures contando
+  pares sobrepostos: tem de dar 0.
+
+- **L2 · Nó órfão fora da camada 0** (2026-08-05) — `computeLayers` semeava só
+  pelos `start_event` e jogava todo inalcançável na camada 0, a coluna da ponta
+  esquerda. Como o fluxo que a validação reparável descarta costuma ser a
+  **ponte** para o resto do processo, tudo a jusante virava órfão de uma vez:
+  na rodada real, ~19 nós empilhados numa coluna só. **O estrago visual é ~3× o
+  semântico.**
+  **A correção,** em três camadas: (1) propaga a camada dos vizinhos que
+  sobraram — `predecessor + 1`, e só na falta dele `sucessor − 1` —, iterando
+  até estabilizar; (2) um fragmento **inteiramente** solto ganha um início
+  próprio (sobe pelos predecessores sem camada) e se espalha em colunas, em vez
+  de virar pilha na 0; (3) `sucessor − 1` pode dar camada negativa, então no fim
+  tudo é deslocado para que a menor volte a ser 0 — a camada é relativa.
+  A (2) é o que interessa ao **chunking**: com N chamadas, pedaço desconectado
+  passa a ser comum, não excepcional.
+  Só quem não tem vizinho nenhum continua indo para a coluna 0 — e isso está
+  testado, junto com os outros três casos, e com a fixture
+  `specComPonteCortada()`. **146 testes verdes.**
+
 - **Validação reparável: defeito consertável deixou de abortar** (2026-08-04) —
   a mudança de maior impacto do dia. `validateProcessSpec` passou a devolver
   **`errors` (fatais) + `warnings` (reparados/tolerados)**, e muta `spec.flows`
@@ -203,27 +248,32 @@ sem decidir.
 
 ---
 
-## 🔢 Ordem recomendada (atualizada 2026-08-04, fim do dia)
+## 🔢 Ordem recomendada (atualizada 2026-08-05)
 
 O critério é **impacto ÷ custo**, com um desempate: o que melhora *todo* diagrama
 vem antes do que melhora *um caso*.
 
 | # | o que | custo | por que aqui |
 |---|---|---|---|
-| **0** | **Commitar os 5 blocos prontos no `dev`** | minutos | Estão testados e fora do git. Risco puro, ganho zero em esperar |
-| **1** | **L1 · rótulos empilhados** | ~1h, sem API | Afeta **todo** diagrama, inclusive os perfeitos. É o que faz a saída parecer amadora. 14 pares sobrepostos num diagrama sem defeito nenhum |
-| **2** | **L2 · órfão fora da camada 0** | ~2h, sem API | Tira o efeito dominó (6 setas a menos ≠ desenho destruído). **Pré-requisito do chunking** |
-| **3** | **M1 · integridade referencial no prompt** | ~15min, sem API | Mira o escorregão que aconteceu **2 de 2 vezes**. Mais barato do dia |
-| **4** | **Task K · chunking** | dias | É o que faz documento real funcionar — e o único caminho para esse tipo de ata rodar no Vercel (hoje só local) |
-| **5** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
-| **6** | **Task A · repo privado** | minutos | Não é qualidade, é exposição: código da empresa em repo público, aberto desde o começo |
-| 7 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
-| 8 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
+| ~~0~~ | ~~Commitar os 5 blocos prontos no `dev`~~ | — | **✅ 2026-08-05** (`01d5990`) |
+| ~~1~~ | ~~L1 · rótulos empilhados~~ | — | **✅ 2026-08-05** |
+| ~~2~~ | ~~L2 · órfão fora da camada 0~~ | — | **✅ 2026-08-05** |
+| **1** | **M1 · integridade referencial no prompt** | ~15min, sem API | **É o próximo.** Mira o escorregão que aconteceu **2 de 2 vezes**. Mais barato da lista |
+| **2** | **Task K · chunking** | dias | É o que faz documento real funcionar — e o único caminho para esse tipo de ata rodar no Vercel (hoje só local). O L2, que era pré-requisito, está pronto |
+| **3** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
+| **4** | **Task A · repo privado** | minutos | Não é qualidade, é exposição: código da empresa em repo público, aberto desde o começo |
+| 5 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
+| 6 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
 
-**Por que 1 e 2 antes do chunking:** são horas contra dias, não gastam API, e
-valem para todo diagrama que o projeto já produz. O chunking é mais importante
-*em ambição*, mas 1–3 melhoram o que você mostra na tela **hoje**, e o 2 é
-pré-requisito dele de qualquer forma.
+**Onde o dia parou (2026-08-05):** L1 e L2 entregues e testados; **o M1 não foi
+começado** — é a primeira coisa de amanhã, e são 15 minutos de edição de dois
+`.md`. O texto exato da regra a acrescentar já está escrito na Task M, abaixo.
+
+**Ainda não validado no desenho:** L1 e L2 passam em 146 testes determinísticos,
+mas **o PNG não foi olhado** — e a própria Task L nasceu de dois bugs que
+nenhum log pegou. Exportar o PNG de um diagrama com gateway de 3 ramos e de um
+com a ponte cortada é a conferência que falta. Não gasta API: dá para carregar
+uma fixture no app local.
 
 **Decisão pequena ainda aberta:** idioma das `unresolved_questions`. Hoje o
 diagrama sai 100% no idioma do documento e as perguntas saem em português. Ou é
@@ -347,37 +397,13 @@ instalado na máquina (o script detecta e diz como instalar).
 enforçado. Rodar `npm run format` **num commit isolado** (o diff é grande e
 ruidoso) e só então adicionar `format:check` ao CI.
 
-### Task L — Dois bugs de layout  ·  sem API  ·  **achados olhando o PNG, não o log**
+### ~~Task L — Dois bugs de layout~~  ·  **✅ os dois feitos em 2026-08-05**
 
-Nenhum dos dois aparece em log nenhum: `npm test`, bpmnlint e o pipeline todo
-passam verdes. Só apareceram quando o desenho foi olhado como imagem. Lição de
-processo: **exportar o PNG faz parte de validar**, não é enfeite.
-
-**L1 · Rótulos de aresta empilhados — afeta TODO diagrama, inclusive os perfeitos.**
-Medido no diagrama bom (o do CLI, sem defeito nenhum): **16 rótulos, 14 pares
-sobrepostos**. As saídas `f8`, `f9` e `f10` do mesmo gateway saem todas em
-`y=385`. É o `"$5,000.01–$50,000"` impresso por cima do `"Above $50,000"`.
-Causa: `edgeLabel()` em `src/laneLayout.ts` posiciona o rótulo no primeiro
-trecho depois da origem. Foi escrito para `Sim`/`Não` — duas saídas em alturas
-diferentes. Com 3+ ramos saindo do mesmo ponto, os rótulos caem no mesmo lugar.
-Fix: empilhar os rótulos do mesmo gateway, deslocando cada um em
-`EDGE_LABEL_H + folga`. Teste: contar pares sobrepostos nas fixtures — hoje
-daria 14, tem de dar 0.
-
-**L2 · Nó órfão cai na camada 0 e empilha na extrema esquerda.**
-`computeLayers()` semeia a partir dos `start_event`; quem não é alcançável cai
-em `layer 0` (`laneLayout.ts`, "Nos desconectados ... vao para a camada 0"), que
-é a coluna da ponta esquerda. Quando um fluxo descartado era a **ponte** para o
-resto do processo, TUDO a jusante vira órfão de uma vez: na rodada real, ~19 nós
-empilhados numa coluna só. **O estrago visual é ~3× o semântico** — 6 setas a
-menos deixam o desenho irreconhecível. Reproduzido cortando a ponte num spec
-salvo: a coluna mais cheia salta de 9% para 30% das formas (e a rodada real foi
-pior).
-Fix: segunda passada — derivar a camada do órfão dos vizinhos que sobraram
-(`predecessor + 1` ou `sucessor − 1`), iterando até estabilizar; só o que não
-tiver vizinho nenhum vai para 0.
-**É pré-requisito do chunking:** com N chamadas, pedaço desconectado passa a ser
-comum, não excepcional.
+Ver os detalhes em **Concluído**. O que vale guardar como lição de processo:
+nenhum dos dois aparecia em log nenhum — `npm test`, bpmnlint e o pipeline todo
+passavam verdes. Só apareceram quando o desenho foi olhado como imagem.
+**Exportar o PNG faz parte de validar**, não é enfeite. E vale para a própria
+correção: ela está coberta por teste, mas o PNG ainda não foi olhado.
 
 ### Task M — Fechar o laço: integridade referencial e refino  ·  M1 sem API
 

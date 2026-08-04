@@ -39,6 +39,7 @@ const EDGE_LABEL_H = 14; // uma linha na fonte padrao do bpmn-js
 const EDGE_LABEL_CHAR_W = 6.5; // largura media por caractere, ~11px Arial
 const EDGE_LABEL_MIN_W = 30;
 const EDGE_LABEL_GAP = 6; // afastamento da linha, para o texto nao ficar em cima
+const EDGE_LABEL_STACK_GAP = 4; // folga entre dois rotulos empilhados
 
 function nodeSize(type: NodeType): { w: number; h: number } {
   switch (type) {
@@ -64,15 +65,29 @@ function nodeSize(type: NodeType): { w: number; h: number } {
  * Camada (coluna) de cada no: maior caminho a partir de um start event,
  * DESCONSIDERANDO as voltas (back-edges) — senao um loop de reprovacao empurra
  * os proprios nos para a direita a cada volta contada.
+ *
+ * Quem nao e alcancavel a partir do start NAO vai mais para a camada 0. Isso
+ * importa porque a validacao reparavel descarta os fluxos que apontam para nos
+ * inexistentes: quando o fluxo descartado era a PONTE para o resto do processo,
+ * tudo a jusante vira inalcancavel de uma vez. Numa rodada real foram ~19 nos
+ * empilhados na coluna da extrema esquerda — 6 setas a menos, e um desenho
+ * irreconhecivel. A camada do orfao passa a vir dos vizinhos que sobraram
+ * (predecessor + 1, ou sucessor - 1); so um fragmento inteiramente solto ganha
+ * um inicio proprio.
  */
 function computeLayers(spec: ProcessSpec): Map<string, number> {
   const outgoing = new Map<string, string[]>();
-  for (const n of spec.nodes) outgoing.set(n.id, []);
-  for (const f of spec.flows) outgoing.get(f.source)?.push(f.target);
+  const incoming = new Map<string, string[]>();
+  for (const n of spec.nodes) {
+    outgoing.set(n.id, []);
+    incoming.set(n.id, []);
+  }
+  for (const f of spec.flows) {
+    outgoing.get(f.source)?.push(f.target);
+    incoming.get(f.target)?.push(f.source);
+  }
 
   const layer = new Map<string, number>();
-  const starts = spec.nodes.filter((n) => n.type === 'start_event').map((n) => n.id);
-  const seeds = starts.length ? starts : spec.nodes.length ? [spec.nodes[0]!.id] : [];
 
   // `path` = nos no caminho atual da busca. Uma seta que aponta para alguem que
   // JA esta nesse caminho e uma volta (o "reprovado -> revisar" dos processos de
@@ -95,10 +110,67 @@ function computeLayers(spec: ProcessSpec): Map<string, number> {
     }
     path.delete(id);
   };
+
+  const starts = spec.nodes.filter((n) => n.type === 'start_event').map((n) => n.id);
+  const seeds = starts.length ? starts : spec.nodes.length ? [spec.nodes[0]!.id] : [];
   for (const s of seeds) visit(s, 0);
 
-  // Nos desconectados (sem caminho a partir do start) vao para a camada 0.
-  for (const n of spec.nodes) if (!layer.has(n.id)) layer.set(n.id, 0);
+  // Deriva a camada de quem sobrou a partir dos vizinhos ja posicionados, ate
+  // estabilizar. Predecessor tem prioridade sobre sucessor: um orfao que ALIMENTA
+  // o processo pertence a esquerda de quem ele alimenta, mas um orfao alimentado
+  // por alguem pertence a direita — e a segunda leitura e a que preserva a ordem
+  // de leitura do desenho.
+  const propagarDosVizinhos = (): void => {
+    for (let mudou = true; mudou; ) {
+      mudou = false;
+      for (const n of spec.nodes) {
+        if (layer.has(n.id)) continue;
+        let alvo: number | undefined;
+        for (const p of incoming.get(n.id)!) {
+          const l = layer.get(p);
+          if (l !== undefined) alvo = alvo === undefined ? l + 1 : Math.max(alvo, l + 1);
+        }
+        if (alvo === undefined) {
+          for (const s of outgoing.get(n.id)!) {
+            const l = layer.get(s);
+            if (l !== undefined) alvo = alvo === undefined ? l - 1 : Math.min(alvo, l - 1);
+          }
+        }
+        if (alvo !== undefined) {
+          layer.set(n.id, alvo);
+          mudou = true;
+        }
+      }
+    }
+  };
+
+  // Comeco de um fragmento solto: sobe pelos predecessores que tambem estao sem
+  // camada, para o fragmento ser desenhado da sua propria origem em diante.
+  const inicioDoFragmento = (id: string): string => {
+    const visto = new Set([id]);
+    let atual = id;
+    for (;;) {
+      const anterior = incoming.get(atual)!.find((p) => !layer.has(p) && !visto.has(p));
+      if (!anterior) return atual;
+      visto.add(anterior);
+      atual = anterior;
+    }
+  };
+
+  for (;;) {
+    propagarDosVizinhos();
+    const solto = spec.nodes.find((n) => !layer.has(n.id));
+    if (!solto) break;
+    // Fragmento sem ligacao nenhuma com o que ja foi posicionado — o caso do
+    // chunking, em que cada chamada devolve um pedaco. Ele ganha um inicio
+    // proprio e se espalha em colunas, em vez de virar uma pilha na coluna 0.
+    visit(inicioDoFragmento(solto.id), 0);
+  }
+
+  // `sucessor - 1` pode gerar camada negativa. A camada e relativa, entao basta
+  // deslocar tudo para que a menor volte a ser 0.
+  const menor = Math.min(...layer.values());
+  if (menor < 0) for (const [id, l] of layer) layer.set(id, l - menor);
   return layer;
 }
 
@@ -331,7 +403,9 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
     );
   }
 
-  // Edges
+  // Edges. Os rotulos ja colocados viajam junto para que o proximo possa
+  // desviar deles em vez de imprimir por cima (ver `edgeLabel`).
+  const rotulosPostos: Retangulo[] = [];
   for (const flow of spec.flows) {
     const s = placed.get(flow.source);
     const t = placed.get(flow.target);
@@ -344,7 +418,7 @@ export async function compileAndLayoutWithLanes(spec: ProcessSpec): Promise<stri
         waypoint: waypoints,
         // Sem BPMNLabel explicito o bpmn-js centraliza o texto NO MEIO DA SETA,
         // por cima da linha. Com bounds proprios ele fica ao lado dela.
-        ...(flow.name ? { label: edgeLabel(moddle, flow.name, waypoints) } : {}),
+        ...(flow.name ? { label: edgeLabel(moddle, flow.name, waypoints, rotulosPostos) } : {}),
       }),
     );
   }
@@ -383,6 +457,21 @@ function internalPoolName(spec: ProcessSpec): string {
   return internal?.name ?? spec.process.name;
 }
 
+/** Caixa em coordenadas de diagrama, para testar sobreposicao de rotulos. */
+interface Retangulo {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Sobreposicao estrita: encostar nao conta. */
+function sobrepoe(a: Retangulo, b: Retangulo): boolean {
+  return (
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+  );
+}
+
 /**
  * Rotulo de uma aresta, posicionado no PRIMEIRO trecho depois da origem — que e
  * onde o "Sim"/"Nao" de um gateway precisa ser lido, junto da decisao e nao no
@@ -391,11 +480,20 @@ function internalPoolName(spec: ProcessSpec): string {
  * Trecho horizontal: o rotulo vai ACIMA da linha. Trecho vertical: vai ao LADO
  * (direita). Nos dois casos afastado de EDGE_LABEL_GAP, porque o problema
  * original era exatamente o texto impresso em cima da seta.
+ *
+ * `postos` sao os rotulos ja colocados, e existem porque a posicao acima nao
+ * basta sozinha: `routeEdge` faz TODA saida partir da direita da origem, na
+ * altura do centro, entao o primeiro trecho de todas as saidas de um mesmo
+ * gateway e identico. Com dois ramos ainda dava certo; com tres, os rotulos
+ * caem exatamente uns sobre os outros — num diagrama sem defeito nenhum eram
+ * 16 rotulos e 14 pares sobrepostos, com "$5,000.01-$50,000" impresso por cima
+ * de "Above $50,000". Quem colide sobe um degrau ate achar espaco.
  */
 function edgeLabel(
   moddle: BpmnModdle,
   name: string,
   waypoints: ModdleElement[],
+  postos: Retangulo[],
 ): ModdleElement {
   const width = Math.max(EDGE_LABEL_MIN_W, Math.round(name.length * EDGE_LABEL_CHAR_W));
   const [p0, p1] = waypoints;
@@ -406,18 +504,48 @@ function edgeLabel(
 
   // Vertical quando o X nao muda; nesse caso o texto cabe melhor ao lado.
   const vertical = Math.abs(x1 - x0) < Math.abs(y1 - y0);
-  const bounds = vertical
+  const caixa: Retangulo = vertical
     ? {
         x: Math.round(x0 + EDGE_LABEL_GAP),
         y: Math.round((y0 + y1) / 2 - EDGE_LABEL_H / 2),
+        width,
+        height: EDGE_LABEL_H,
       }
     : {
         x: Math.round((x0 + x1) / 2 - width / 2),
         y: Math.round(y0 - EDGE_LABEL_GAP - EDGE_LABEL_H),
+        width,
+        height: EDGE_LABEL_H,
       };
 
+  // Empilha para CIMA: logo abaixo esta a propria linha da seta, e tirar o
+  // rotulo de cima dela foi o motivo de existir esta funcao. Cada passo pula
+  // acima do mais alto dos rotulos que ele encosta — assim os ja resolvidos nao
+  // voltam a colidir, e o laco termina em no maximo um passo por rotulo posto.
+  // So quando a pilha chega ao topo do pool a direcao inverte, para nada sair
+  // do desenho.
+  const teto = POOL_Y + EDGE_LABEL_GAP;
+  const yBase = caixa.y;
+  let paraBaixo = false;
+  for (let tentativas = 0; tentativas <= 2 * postos.length + 1; tentativas++) {
+    const colidem = postos.filter((p) => sobrepoe(p, caixa));
+    if (!colidem.length) break;
+    if (!paraBaixo) {
+      const acima = Math.min(...colidem.map((p) => p.y)) - EDGE_LABEL_STACK_GAP - caixa.height;
+      if (acima >= teto) {
+        caixa.y = acima;
+        continue;
+      }
+      paraBaixo = true;
+      caixa.y = yBase;
+      continue;
+    }
+    caixa.y = Math.max(...colidem.map((p) => p.y + p.height)) + EDGE_LABEL_STACK_GAP;
+  }
+  postos.push(caixa);
+
   return moddle.create('bpmndi:BPMNLabel', {
-    bounds: moddle.create('dc:Bounds', { ...bounds, width, height: EDGE_LABEL_H }),
+    bounds: moddle.create('dc:Bounds', { ...caixa }),
   });
 }
 
