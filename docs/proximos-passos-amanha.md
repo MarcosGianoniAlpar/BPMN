@@ -52,6 +52,39 @@
 
 ## ✅ Concluído (não refazer)
 
+- **Bug: o relatório do bpmnlint dependia de quantas vezes tinha rodado**
+  (2026-08-05) — **achado por acidente**, escrevendo o teste de lint das
+  fixtures. `src/lintBpmn.ts` guardava a instância de `Linter` num cache de
+  módulo, e as regras do bpmnlint acumulam estado por instância. Lintando o
+  **mesmo** diagrama de 2 fluxos quatro vezes saíam **0, 6, 2 e 2** achados de
+  `no-duplicate-sequence-flows` — todos de categoria `error`. Com um `Linter`
+  novo por chamada: 0 nas quatro. Isolado: o estado é do Linter, não do moddle.
+  **Não era bug de teste, era de produção.** O CLI escapava (um lint por
+  processo), mas `npm run web` é processo longo e a lambda do Vercel fica quente:
+  **da 2ª geração em diante** o especialista via erros de fluxo duplicado que não
+  existem — e como um `error` de lint aqui é o sinal de "bug no compilador, vá
+  olhar", o aviso mandava caçar um defeito inexistente.
+  Correção: o cache guarda uma **fábrica**, não o Linter; o módulo continua
+  carregado uma vez só (o custo real está no cache do `require`) e a config é
+  reparseada por chamada. Dois testes guardam: lintar o mesmo XML 4× dá o mesmo
+  resultado, e a ordem das fixtures não muda o relatório de nenhuma.
+
+- **Lint das fixtures + `npm run fixtures:bpmn`** (2026-08-05) — a parte
+  automatizável da lição "exportar o PNG faz parte de validar".
+  `test/lintFixtures.test.ts` roda o bpmnlint sobre o BPMN que o pipeline
+  realmente produz — compilado, posicionado e colorido, **pelas duas rotas de
+  layout** — e o script grava os mesmos diagramas em `output/fixtures/` para
+  serem abertos.
+  **O que ele provou:** `no-overlapping-elements` não dispara em nenhuma fixture
+  (foi ele que acusou o bug da altura fixa de raia), e só a `ponte-cortada`
+  produz erro — `no-implicit-end` em `triagem` e `no-implicit-start` em
+  `conferir`, que é o **comportamento correto** para uma fixture que modela uma
+  ponte descartada de propósito.
+  **O que ele NÃO cobre, e é importante saber:** o bpmnlint olha **formas**, não
+  `bpmndi:BPMNLabel`. Sobreposição de rótulo de aresta — o L1 — não dispara regra
+  nenhuma; a única rede ali continua sendo `paresSobrepostos` em
+  `laneLayout.test.ts`, e o olho.
+
 - **M1 · integridade referencial** (2026-08-05) — a regra foi para **três**
   lugares, não só para os prompts: `schemas/process-spec.schema.json` (nas
   `description` de `nodes`, de `flows` e do `$defs.flow`), `extract-process.md`
@@ -279,7 +312,7 @@ vem antes do que melhora *um caso*.
 | ~~2~~ | ~~L2 · órfão fora da camada 0~~ | — | **✅ 2026-08-05** |
 | ~~3~~ | ~~M1 · integridade referencial~~ | — | **✅ 2026-08-05**, e também no schema |
 | ~~—~~ | ~~Task A · repo privado~~ | — | **Descartada em 2026-08-05:** decisão do dono é manter público ("preciso que o povo veja") |
-| **1** | **Olhar o PNG** do L1/L2 | ~30min, sem API | Fecha o trabalho de ontem. A Task L nasceu de dois bugs que teste nenhum pegou |
+| **1** | **Olhar** os `.bpmn` do L1/L2 | ~15min, sem API | **Meio caminho andado:** `npm run fixtures:bpmn` já gravou os 6 diagramas em `output/fixtures/` e lintou. Falta o olho — arrastar `faixa-de-valor.bpmn` e `ponte-cortada.bpmn` no app, porque rótulo sobreposto o lint não pega |
 | **2** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
 | **3** | **SDK 0.68 → 0.115** | ~1h, sem API | **Antecipado** (era o item 2 da lista de não-resolvidos). Ver por quê abaixo |
 | **4** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
@@ -694,6 +727,17 @@ descobrir que o spec já estava em inglês. Schema + `gen:types` + regra no prom
   tenant (consentimento de admin, permissões, **Application Access Policy** — dá
   403 mesmo com tudo concedido no portal) e (b) o spike de CORS/codec, único item
   capaz de invalidar o desenho.
+- **`fake-join`: decidir se é ruído ou se é para modelar** — o lint das fixtures
+  mostrou `fake-join` em **5 das 6** ("Incoming flows do not join"): um nó com
+  várias entradas e nenhum gateway de junção explícito, tipicamente vários
+  caminhos desembocando no mesmo `end_event`. Vem do `bpmnlint:recommended` e é
+  `warn`, não erro. Vai aparecer em **todo** diagrama real, então é decisão de
+  postura, não bug: (a) ensinar o prompt a fechar com gateway quando o documento
+  diz que o processo só segue depois que todos terminarem — o que já é regra para
+  `parallel_gateway` e poderia valer para a convergência em geral; ou (b) desligar
+  a regra, como foi feito com `no-inclusive-gateway`, porque ela existe para
+  *motores de execução* e o destino aqui é documentação → ServiceNow. Sem decidir,
+  a caixa de avisos vira barulho constante e o especialista para de ler.
 - **`/api/health`** — checar banco + config sem disparar uma geração paga.
 - **Link compartilhável de projeto** (`/?project=<id>`) — duas pessoas
   contribuindo no mesmo diagrama via versões. É o passo (a), leve, e encaixa no
@@ -743,6 +787,7 @@ npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada 💸)
 npm run typecheck && npm run typecheck:test && npm run lint && npm test
 npm run typecheck:vercel                # valida as funções serverless em api/
 npm run gen:types                       # regenera tipos dos schemas
+npm run fixtures:bpmn                   # grava as fixtures em output/fixtures/ e linta
 npm run backup                          # dump do Postgres em backups/
 ```
 

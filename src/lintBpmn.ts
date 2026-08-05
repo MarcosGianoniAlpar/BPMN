@@ -30,7 +30,8 @@ interface RawReport {
 const EMPTY: LintResult = { issues: [], errors: 0, warnings: 0 };
 
 // undefined = ainda nao tentou; null = tentou e falhou (nao tenta de novo).
-let cachedLinter: Linter | null | undefined;
+// Guardamos uma FABRICA, nao um Linter — ver o porque logo abaixo.
+let cachedFactory: (() => Linter) | null | undefined;
 
 /**
  * Carrega o bpmnlint sob demanda (import dinamico) e tolera falha de carga.
@@ -38,26 +39,43 @@ let cachedLinter: Linter | null | undefined;
  * so-ESM. O Node local (v22+) suporta `require(esm)`, mas o runtime serverless
  * do Vercel NAO — la o import quebraria. Como o lint e diagnostico e nao
  * bloqueia a geracao, se ele nao carregar seguimos sem lint.
+ *
+ * O QUE FICA EM CACHE E O MODULO, NAO O LINTER. Reusar uma instancia de `Linter`
+ * entre chamadas contamina o relatorio: lintando o MESMO XML quatro vezes com o
+ * mesmo Linter saem 0, 6, 2 e 2 achados de `no-duplicate-sequence-flows`, todos
+ * de categoria `error`, sobre um diagrama de 2 fluxos. Com um Linter novo por
+ * chamada saem 0 nas quatro. O estado vive na instancia (as regras do bpmnlint
+ * sao criadas uma vez por Linter e algumas acumulam em closure), e o moddle nao
+ * tem nada com isso — testado separando os dois.
+ *
+ * Por que isso importava de verdade: o CLI faz um lint por processo e escapava,
+ * mas `npm run web` e um processo longo e a lambda do Vercel fica quente. Da
+ * SEGUNDA geracao em diante o app acusava fluxos duplicados que nao existem — e
+ * como um `error` de lint aqui costuma significar bug no compilador, o aviso
+ * mandava caçar um defeito inexistente. Criar o Linter e barato: o custo real
+ * (resolver e carregar os modulos das regras) fica no cache do `require` do Node.
  */
-async function getLinter(): Promise<Linter | null> {
-  if (cachedLinter !== undefined) return cachedLinter;
+async function getLinterFactory(): Promise<(() => Linter) | null> {
+  if (cachedFactory !== undefined) return cachedFactory;
   try {
     const { Linter } = await import('bpmnlint');
     // O node-resolver e CJS; sob NodeNext o default vem no .default em runtime.
     const resolverMod = await import('bpmnlint/lib/resolver/node-resolver.js');
     const NodeResolver = ((resolverMod as { default?: unknown }).default ??
       resolverMod) as new () => unknown;
-    const config = JSON.parse(readFileSync(rcPath, 'utf-8'));
-    cachedLinter = new Linter({ config, resolver: new NodeResolver() });
+    const rc = readFileSync(rcPath, 'utf-8');
+    // `config` reparseado a cada chamada: um Linter limpo com uma config que
+    // outra instancia possa ter mutado nao resolveria nada.
+    cachedFactory = () => new Linter({ config: JSON.parse(rc), resolver: new NodeResolver() });
   } catch (err) {
     console.log(
       `  AVISO: bpmnlint indisponivel neste runtime, pulando o lint: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    cachedLinter = null;
+    cachedFactory = null;
   }
-  return cachedLinter;
+  return cachedFactory;
 }
 
 /**
@@ -69,10 +87,11 @@ async function getLinter(): Promise<Linter | null> {
  * compilador, e vale ser visto. Best-effort: qualquer falha devolve vazio.
  */
 export async function lintBpmn(xml: string): Promise<LintResult> {
-  const linter = await getLinter();
-  if (!linter) return EMPTY;
+  const criarLinter = await getLinterFactory();
+  if (!criarLinter) return EMPTY;
 
   try {
+    const linter = criarLinter();
     const moddle = new BpmnModdle();
     const { rootElement } = await moddle.fromXML(xml);
     const reports = (await linter.lint(rootElement)) as Record<string, RawReport[]>;

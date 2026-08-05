@@ -29,6 +29,7 @@
     "gen:types:minutes": "json2ts -i schemas/meeting-minutes.schema.json -o src/types/meeting-minutes.ts --bannerComment \"/* GERADO por 'npm run gen:types' a partir de schemas/meeting-minutes.schema.json. Nao editar a mao. */\"",
     "lint": "eslint .",
     "lint:bpmn": "bpmnlint",
+    "fixtures:bpmn": "tsx scripts/exportar-fixtures.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
