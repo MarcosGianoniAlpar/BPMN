@@ -27,6 +27,30 @@ function mensagemComToolUse(input: unknown, stopReason = 'tool_use'): Anthropic.
 const NO = { id: 'inicio', type: 'start_event', name: 'Pedido recebido' };
 const FLUXO = { id: 'f1', source: 'inicio', target: 'fim' };
 
+describe('PROCESS_SPEC_TOOL — o que a definicao da ferramenta entrega ao modelo', () => {
+  const schema = PROCESS_SPEC_TOOL.input_schema as Record<string, any>;
+
+  test('nao sobrou `$ref` nem `$defs` no schema achatado', () => {
+    // Regressao que custou uma geracao paga: com os itens dos arrays atras de
+    // `$ref`, o modelo chamou a ferramenta preenchida com `$PARAMETER_VALUE`.
+    assert.equal(schema.$defs, undefined);
+    assert.ok(!JSON.stringify(schema).includes('"$ref"'), 'sobrou um $ref no input_schema');
+  });
+
+  test('a regra de integridade referencial chega ao modelo (M1)', () => {
+    // O schema E a definicao da ferramenta que o modelo le — nao basta a regra
+    // estar nos prompts. Duas de duas falhas de modelagem do dia caíram no mesmo
+    // lugar: gateways intermediarios referenciados em `flows` e nunca declarados
+    // em `nodes`. Se um refactor do schema derrubar estes textos, a instrucao
+    // desaparece sem ninguem notar — e o proximo sintoma e uma geracao paga.
+    assert.match(schema.properties.flows.description, /ANTES DE EMITIR/);
+    assert.match(schema.properties.flows.description, /declarado em nodes/);
+    assert.match(schema.properties.nodes.description, /gateways intermediarios/);
+    // E a instrucao tem de sobreviver ao achatamento do `$ref` de `flow`.
+    assert.match(schema.properties.flows.items.description, /DECLARADOS em `nodes`/);
+  });
+});
+
 describe('readSpecFromMessage — colecoes na forma errada', () => {
   test('array serializado em STRING vira array', () => {
     // Sintoma real: `/nodes must be array`, com a chave presente na raiz. A

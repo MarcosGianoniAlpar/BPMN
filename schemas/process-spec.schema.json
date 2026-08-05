@@ -30,10 +30,12 @@
     "nodes": {
       "type": "array",
       "minItems": 1,
+      "description": "TODOS os nos do processo. Todo id que aparecer em flows.source ou flows.target tem de estar declarado aqui — inclusive os gateways intermediarios que voce criar para encadear duas perguntas ('precisa do Financeiro?' -> 'precisa do CFO?'), que sao os mais esquecidos.",
       "items": { "$ref": "#/$defs/processNode" }
     },
     "flows": {
       "type": "array",
+      "description": "Setas entre os nos. ANTES DE EMITIR, confira flows contra nodes: todo source e todo target tem de ser o id de um no declarado em nodes. Fluxo que aponta para no nao declarado e descartado, e quando ele era a ponte para o resto do processo, todo o trecho a jusante desaparece do desenho.",
       "items": { "$ref": "#/$defs/flow" }
     },
     "unresolved_questions": {
@@ -112,6 +114,7 @@
     "flow": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Uma seta do processo. `source` e `target` sao ids de nos DECLARADOS em `nodes` — nunca de um no que voce so mencionou aqui.",
       "required": ["id", "source", "target"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },

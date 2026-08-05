@@ -68,8 +68,20 @@ respostas do especialista à estrutura do processo.
    o idioma vem do spec que você recebeu. Um spec em inglês que volta com nós
    novos em português é um erro, mesmo que a resposta do especialista tenha sido
    escrita em português.
-9. **Responda chamando a ferramenta `emit_process_spec`, uma única vez.** Não
-   escreva JSON em texto na resposta.
+9. **Antes de emitir, confira `flows` contra `nodes`.** Todo `source` e todo
+   `target` tem de ser o `id` de um nó que existe em `nodes` — **inclusive os nós
+   que você acabou de criar** a partir das respostas do especialista. Um fluxo que
+   aponta para um `id` não declarado é **descartado**, e quando ele era a ponte
+   para o resto do processo, todo o trecho a jusante desaparece do desenho.
+
+   Aqui o risco é maior que na extração, porque no refino você **acrescenta**
+   caminho: a resposta define o que acontece na rejeição, ou uma alçada nova, e
+   é natural criar gateways intermediários para encadear as condições ("precisa
+   do Financeiro? precisa do CFO?"), escrever os fluxos que passam por eles e
+   esquecer de declará-los. Cada gateway que você criar é um item de `nodes`, com
+   `id`, `type`, `name` e a `evidence` de decisão do especialista.
+10. **Responda chamando a ferramenta `emit_process_spec`, uma única vez.** Não
+    escreva JSON em texto na resposta.
 
 ## Campos da ferramenta (use exatamente estes — não invente outros)
 
@@ -103,3 +115,8 @@ extra em volta (nada de `parameters`, `input` ou `process_spec`).
 
 Um `flow` só pode ter `id`, `source`, `target`, `name` e `condition` — nada além
 disso. Um `node` só pode ter os campos listados acima.
+
+E a última conferência, agora que a lista revisada está escrita: **percorra
+`flows` e, para cada `source` e cada `target`, ache o nó correspondente em
+`nodes`.** Os nós que você criou a partir das respostas do especialista contam,
+e os gateways intermediários de uma cadeia de condições são os mais esquecidos.

@@ -38,9 +38,14 @@ export interface ProcessSpec {
    */
   lanes?: Lane[];
   /**
+   * TODOS os nos do processo. Todo id que aparecer em flows.source ou flows.target tem de estar declarado aqui — inclusive os gateways intermediarios que voce criar para encadear duas perguntas ('precisa do Financeiro?' -> 'precisa do CFO?'), que sao os mais esquecidos.
+   *
    * @minItems 1
    */
   nodes: [ProcessNode, ...ProcessNode[]];
+  /**
+   * Setas entre os nos. ANTES DE EMITIR, confira flows contra nodes: todo source e todo target tem de ser o id de um no declarado em nodes. Fluxo que aponta para no nao declarado e descartado, e quando ele era a ponte para o resto do processo, todo o trecho a jusante desaparece do desenho.
+   */
   flows: Flow[];
   /**
    * Ambiguidades que o documento nao resolveu. A IA nunca deve inventar o fluxo; deve perguntar.
@@ -87,6 +92,9 @@ export interface Evidence {
    */
   chunk_id?: string;
 }
+/**
+ * Uma seta do processo. `source` e `target` sao ids de nos DECLARADOS em `nodes` — nunca de um no que voce so mencionou aqui.
+ */
 export interface Flow {
   id: Id;
   source: Id;

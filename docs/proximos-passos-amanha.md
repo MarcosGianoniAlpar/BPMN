@@ -52,6 +52,25 @@
 
 ## ✅ Concluído (não refazer)
 
+- **M1 · integridade referencial** (2026-08-05) — a regra foi para **três**
+  lugares, não só para os prompts: `schemas/process-spec.schema.json` (nas
+  `description` de `nodes`, de `flows` e do `$defs.flow`), `extract-process.md`
+  (regra 6 nova + a última linha, que é o que o modelo lê por último) e
+  `refine-process.md` (regra 9 nova).
+  **Por que também no schema:** o schema **é** a definição da ferramenta que o
+  modelo lê, e este projeto já se queimou duas vezes com prompt e schema dizendo
+  coisas diferentes (o verbo "-ar/-er/-ir", o `meeting.language`). Confirmado no
+  código: `src/toolSchema.ts` inlina os `$ref` e faz os irmãos vencerem o alvo,
+  então a `description` chega íntegra ao `input_schema`.
+  **O que NÃO fazer:** `description` irmã de `$ref` em `source`/`target`. Testei —
+  o `json2ts` inlina o tipo (`source: Id` vira `source: string`) e ainda descarta
+  o texto em favor do `description` do próprio `Id`. Perde o tipo nomeado e não
+  ganha nada; a `description` de `flows` já diz a mesma coisa.
+  Coberto por 2 testes que guardam o **mecanismo** (o `input_schema` não tem
+  `$ref` sobrando, e a instrução sobrevive ao achatamento) — não a prosa.
+  **148 testes verdes.** Falta o que só uma rodada real diz: se o escorregão
+  para de acontecer.
+
 - **Os 5 blocos de 2026-08-04 foram commitados** (2026-08-05, commit `01d5990`) —
   eram ~1950 linhas em 35 arquivos modificados e 8 novos (`test/`, `.github/`,
   `src/aiThinking.ts`, `src/sizing.ts`, `scripts/backup-db.mjs`, `public/brand/`)
@@ -258,18 +277,55 @@ vem antes do que melhora *um caso*.
 | ~~0~~ | ~~Commitar os 5 blocos prontos no `dev`~~ | — | **✅ 2026-08-05** (`01d5990`) |
 | ~~1~~ | ~~L1 · rótulos empilhados~~ | — | **✅ 2026-08-05** |
 | ~~2~~ | ~~L2 · órfão fora da camada 0~~ | — | **✅ 2026-08-05** |
-| **1** | **M1 · integridade referencial no prompt** | ~15min, sem API | **É o próximo.** Mira o escorregão que aconteceu **2 de 2 vezes**. Mais barato da lista |
-| **2** | **Task K · chunking** | dias | É o que faz documento real funcionar — e o único caminho para esse tipo de ata rodar no Vercel (hoje só local). O L2, que era pré-requisito, está pronto |
-| **3** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
-| **4** | **Task A · repo privado** | minutos | Não é qualidade, é exposição: código da empresa em repo público, aberto desde o começo |
-| 5 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
-| 6 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
+| ~~3~~ | ~~M1 · integridade referencial~~ | — | **✅ 2026-08-05**, e também no schema |
+| ~~—~~ | ~~Task A · repo privado~~ | — | **Descartada em 2026-08-05:** decisão do dono é manter público ("preciso que o povo veja") |
+| **1** | **Olhar o PNG** do L1/L2 | ~30min, sem API | Fecha o trabalho de ontem. A Task L nasceu de dois bugs que teste nenhum pegou |
+| **2** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
+| **3** | **SDK 0.68 → 0.115** | ~1h, sem API | **Antecipado** (era o item 2 da lista de não-resolvidos). Ver por quê abaixo |
+| **4** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
+| **5** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
+| 6 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
+| 7 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
 
-**Onde o dia parou (2026-08-05):** L1 e L2 entregues e testados; **o M1 não foi
-começado** — é a primeira coisa de amanhã, e são 15 minutos de edição de dois
-`.md`. O texto exato da regra a acrescentar já está escrito na Task M, abaixo.
+**Por que o SDK subiu na lista.** Estava classificado como "otimização de custo,
+não corrige erro" — e isso era verdade **com uma chamada por documento**. A Task K
+faz ~7 chamadas por documento, então o `effort: high` (que roda hoje por omissão,
+o mais caro) passa a ser multiplicado por 7. Não gasta API para fazer, e agora há
+148 testes guardando o salto de 47 versões.
 
-**Ainda não validado no desenho:** L1 e L2 passam em 146 testes determinísticos,
+**Por que o M1 antes da K não era só "é barato".** Hoje uma chamada erra e você
+perde uma chamada. Com chunking, sair um conjunto completo é o **produto** das
+taxas de acerto: a 80% cada, 6 extrações dão **26%**. Confiabilidade por chamada
+deixa de ser incremental e passa a decidir se a K funciona.
+
+### A forma da Task K — decidir ANTES da primeira linha de código
+
+`/api/generate` hoje é **1 requisição = 1 pipeline = 1 chamada de IA** (conferido
+em `src/httpHandlers.ts` e `api/generate.ts`). Se as N extrações rodarem dentro de
+um `/api/generate`, são 6 × ~50s ≈ 300s e o Hobby corta em **60s** — mesmo com
+cada chunk cabendo sozinho. Ou seja: o ganho principal da K (a ata de PO sair do
+"só roda local") **só existe** se o chunking for N requisições dirigidas pelo
+cliente:
+
+```
+POST /api/process-index   → lista de processos + faixas de seção  (~500 tokens)
+POST /api/generate  ×N    → um processo por requisição
+merge determinístico      → concatena, deduplica lanes/participants por nome
+```
+
+Isso muda a `store` (um projeto passa a ter **progresso parcial** — 4 de 6
+processos prontos, e o que acontece se a 5ª falhar) e muda a tela. Desenhar depois
+custa retrabalho nas duas.
+
+**Duas coisas que a K cria e não estavam no plano:**
+- **Agregar avisos e `unresolved_questions` das N chamadas.** 6× perguntas numa
+  caixa só afoga o especialista — e o volume vai ser alto **de propósito**, porque
+  muita pergunta em aberto é o comportamento certo.
+- **Teto de custo por projeto**, não por chamada. Hoje o rate limit é por IP/hora
+  e global/dia; quando um documento dispara 7 chamadas, a unidade de gasto deixa
+  de ser a chamada.
+
+**Ainda não validado no desenho:** L1 e L2 passam em 148 testes determinísticos,
 mas **o PNG não foi olhado** — e a própria Task L nasceu de dois bugs que
 nenhum log pegou. Exportar o PNG de um diagrama com gateway de 3 ramos e de um
 com a ponte cortada é a conferência que falta. Não gasta API: dá para carregar
@@ -310,8 +366,10 @@ Tudo abaixo já passou em validação determinística; falta a rodada real.
    Bom resultado = rótulos em inglês, verbo primeiro, curtos (`Check budget`);
    eventos como substantivo; gateways como pergunta; valores e SLAs no `detail`.
 
-### Task A — Repo privado  ·  sem API
-`MarcosGianoniAlpar/BPMN` está **público** e é código da empresa. Tornar privado.
+### ~~Task A — Repo privado~~  ·  **descartada em 2026-08-05**
+`MarcosGianoniAlpar/BPMN` fica **público**, por decisão do dono: "preciso que o
+povo veja mesmo". Não reabrir sem ele pedir. Consequência a ter em mente: nada de
+segredo no repo — as chaves continuam só em `.env` local e nas env vars do Vercel.
 
 ### Task B — Message flows entre pools  ·  sem API pra desenhar, +1 geração pra validar
 Setas tracejadas entre o processo interno e os pools externos. O `ProcessSpec`
@@ -407,16 +465,15 @@ correção: ela está coberta por teste, mas o PNG ainda não foi olhado.
 
 ### Task M — Fechar o laço: integridade referencial e refino  ·  M1 sem API
 
-**M1 · Regra de integridade no prompt — grátis, mira o erro mais frequente.**
-Duas de duas falhas de modelagem do dia caíram no MESMO lugar: a cadeia de
-aprovação por faixa de valor (§3.1). O modelo tenta encadear ("precisa do
-Finance? precisa do CFO?"), cria gateways intermediários, escreve os fluxos para
-eles e **não os declara** em `nodes` (`gw_finance_needed`/`gw_cfo_needed` numa
-rodada, `gw_value_tier_check`/`check2` na outra). Não é ruído: é um ponto
-sistematicamente ambíguo do documento. Regra a acrescentar:
-> Antes de emitir a ferramenta, confira: todo `source` e todo `target` de
-> `flows` tem de ser o `id` de um nó existente em `nodes`. Gateway intermediário
-> que você criar precisa estar na lista de nós.
+**~~M1 · Regra de integridade no prompt~~ — ✅ feito em 2026-08-05** (ver
+Concluído; foi para os dois prompts **e** para o schema).
+O erro que ele mira, para referência: duas de duas falhas de modelagem caíram no
+MESMO lugar, a cadeia de aprovação por faixa de valor (§3.1). O modelo tenta
+encadear ("precisa do Finance? precisa do CFO?"), cria gateways intermediários,
+escreve os fluxos para eles e **não os declara** em `nodes`
+(`gw_finance_needed`/`gw_cfo_needed` numa rodada, `gw_value_tier_check`/`check2`
+na outra). Não é ruído: é um ponto sistematicamente ambíguo do documento.
+**Se voltar a acontecer**, o próximo passo não é mais prompt — é o M2.
 
 **M2 · Realimentar os avisos no refino.** Os avisos da validação já são
 perguntas bem-formadas ("você referenciou `X` mas não o declarou"). O
