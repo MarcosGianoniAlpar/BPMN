@@ -52,6 +52,28 @@
 
 ## ✅ Concluído (não refazer)
 
+- **SDK `@anthropic-ai/sdk` 0.68 → 0.115 + `AI_EFFORT`** (2026-08-05) — o salto de
+  47 versões **não quebrou nada**: typecheck, typecheck:test, lint, 157 testes e
+  `typecheck:vercel` passaram sem uma única mudança de código forçada.
+  **Por que foi indolor** (conferido no código antes de subir, não depois): as três
+  quebras que a versão nova traz são `temperature`/`top_p`/`top_k` (400 no
+  Sonnet 5), `budget_tokens` (400) e prefill de turno `assistant` (400) — e o
+  projeto **não usava nenhuma das três**. O cast de `adaptive` em
+  `src/aiThinking.ts` saiu: o SDK novo tipa o modo.
+  **O ganho:** `output_config: { effort }` nas três chamadas, configurável por
+  `AI_EFFORT` (mesmo padrão do `AI_THINKING`: valor inválido **explode**).
+  **O padrão é `high` de propósito, não `medium`** — `high` é o que a API assume
+  quando o campo é omitido, ou seja, é o que o projeto já vinha pagando sem nunca
+  ter escolhido. O padrão preserva o comportamento atual; descer é decisão de quem
+  paga, não efeito colateral de um upgrade.
+  **Onde procurar economia:** pela referência da API, `medium` no Sonnet 5 rende
+  aproximadamente o que o Sonnet 4.6 rendia em `high` — a escala desceu um degrau
+  com o modelo novo. **1 geração em `medium` decide.** E o ganho é multiplicado
+  por ~7 quando a Task K chegar.
+  Coberto por 5 testes novos, incluindo um que fixa que o `effort` vai **dentro**
+  de `output_config`: na raiz da requisição ele é ignorado em silêncio e a chamada
+  roda em `high` como se nada tivesse sido pedido.
+
 - **Bug: o relatório do bpmnlint dependia de quantas vezes tinha rodado**
   (2026-08-05) — **achado por acidente**, escrevendo o teste de lint das
   fixtures. `src/lintBpmn.ts` guardava a instância de `Linter` num cache de
@@ -282,11 +304,11 @@
 1. **Task I** — decidir (a) um spec com `processes[]` ou (b) uma versão por
    processo. Enquanto não decidir, um documento multi-processo continua saindo
    como um diagrama só, achatado. Trava F1/F2.
-2. **Subir o SDK 0.68 → 0.115** para ganhar `thinking: adaptive` e
-   `output_config.effort`. **Não conserta erro nenhum** — é alavanca de custo
-   (hoje roda em `effort: high` por omissão, o mais caro). Não gasta API, mas
-   são 47 versões de salto: fazer em commit isolado, com typecheck + testes.
-3. Só então **1 geração** com a ata de PO.
+2. ~~**Subir o SDK 0.68 → 0.115**~~ — **✅ feito em 2026-08-05** (ver Concluído).
+   O `effort` agora é `AI_EFFORT`, com padrão `high` = o comportamento anterior.
+3. Só então **1 geração** com a ata de PO — e vale fazê-la já em `AI_EFFORT=medium`,
+   para a mesma chamada responder as duas perguntas (qualidade da extração e se
+   `medium` basta).
 
 **Gasto até aqui:** US$ 2,26 em 22 chamadas, das quais **US$ 0,53 (≈23%) foram as
 duas falhas** com a ata de PO — uma por forma, outra por teto. Ambas agora têm
@@ -312,9 +334,10 @@ vem antes do que melhora *um caso*.
 | ~~2~~ | ~~L2 · órfão fora da camada 0~~ | — | **✅ 2026-08-05** |
 | ~~3~~ | ~~M1 · integridade referencial~~ | — | **✅ 2026-08-05**, e também no schema |
 | ~~—~~ | ~~Task A · repo privado~~ | — | **Descartada em 2026-08-05:** decisão do dono é manter público ("preciso que o povo veja") |
+| ~~4~~ | ~~SDK 0.68 → 0.115 + `AI_EFFORT`~~ | — | **✅ 2026-08-05**, sem uma quebra |
 | **1** | **Olhar** os `.bpmn` do L1/L2 | ~15min, sem API | **Meio caminho andado:** `npm run fixtures:bpmn` já gravou os 6 diagramas em `output/fixtures/` e lintou. Falta o olho — arrastar `faixa-de-valor.bpmn` e `ponte-cortada.bpmn` no app, porque rótulo sobreposto o lint não pega |
-| **2** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
-| **3** | **SDK 0.68 → 0.115** | ~1h, sem API | **Antecipado** (era o item 2 da lista de não-resolvidos). Ver por quê abaixo |
+| **2** | **Task N · `strict: true` no tool use** | ~1h + 1 geração | **Novo, e pode aposentar o `normalizarColecoes`.** Ver abaixo |
+| **3** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
 | **4** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
 | **5** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
 | 6 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
@@ -487,6 +510,50 @@ instalado na máquina (o script detecta e diz como instalar).
 `npm run format:check` reprova ~33 arquivos: o script existe mas nunca foi
 enforçado. Rodar `npm run format` **num commit isolado** (o diff é grande e
 ruidoso) e só então adicionar `format:check` ao CI.
+
+### Task N — `strict: true` no tool use  ·  ~1h + 1 geração para confirmar
+
+**Achado ao consultar a referência da API para o upgrade do SDK, não procurando por
+isso.** Existe `strict: true` como campo de raiz da definição da ferramenta (não do
+`tool_choice`), **GA, sem beta header**, e o Sonnet 5 está na lista de suportados.
+O que ele garante: **`tool_use.input` valida exatamente contra o `input_schema`.**
+
+**Por que isso importa aqui mais que em qualquer outro projeto:** é exatamente a
+classe de falha que o `normalizarColecoes` existe para remendar — `nodes` vindo
+como string de JSON, como mapa por id, agrupado por processo, ou cortado no meio.
+Foram ~US$ 0,57 em gerações perdidas por essa família de defeitos, e o remendo
+atual conserta *as formas erradas conhecidas*. Com `strict`, elas deixam de ser
+possíveis. O `normalizarColecoes` não sai no mesmo commit — vira rede de segurança
+até uma rodada real confirmar.
+
+**O trabalho real não é o `strict: true`, é o schema.** A saída estruturada
+**não aceita** vários keywords que o nosso schema usa:
+
+| keyword | onde está hoje | o que fazer |
+|---|---|---|
+| `minLength` | `process.name` e outros | tirar **só** da versão que vai para a ferramenta |
+| `minItems` | `nodes` | idem |
+| `pattern` | `$defs.id` | **não está na lista de suportados** — conferir antes |
+
+O lugar certo para isso já existe: **`src/toolSchema.ts`**, que hoje achata os
+`$ref` e remove `$defs`/`$schema`/`$id` justamente porque *"quem recebe a versão
+achatada é só a API"*. O Ajv continua lendo o arquivo com os keywords intactos, e
+`npm run gen:types` também — nada de tipo muda.
+
+**Duas incertezas a resolver antes de gastar, ambas de leitura, não de teste:**
+1. **`strict` + `tool_choice` forçado.** A referência lista incompatibilidades de
+   `strict` numa frase que fala de *programmatic tool calling*; a leitura natural é
+   que a restrição é da PTC, não do `strict`. Mas nós usamos `tool_choice` forçado
+   nas três chamadas — confirmar na doc antes, porque se forem incompatíveis a task
+   morre aqui.
+2. **`pattern` é suportado?** Se não, o `^[A-Za-z_][A-Za-z0-9_]*$` sai do schema da
+   ferramenta e a garantia de id válido passa a ser só do Ajv — que já é onde ela
+   é fatal hoje (`SCHEMA`), então não se perde nada.
+
+**Como validar sem gastar:** o schema achatado é testável (`test/extractProcessSpec.test.ts`
+já inspeciona o `input_schema`) — dá para fixar que os keywords proibidos
+desapareceram e que `additionalProperties: false` + `required` estão em todo objeto,
+que é o que o `strict` exige. Só a garantia em si precisa de 1 geração.
 
 ### ~~Task L — Dois bugs de layout~~  ·  **✅ os dois feitos em 2026-08-05**
 

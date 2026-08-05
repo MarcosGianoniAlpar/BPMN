@@ -5,7 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
 import { PROCESS_SPEC_TOOL, readSpecFromMessage } from './extractProcessSpec.js';
-import { thinkingParam } from './aiThinking.js';
+import { thinkingParam, outputConfigParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/refine-process.md');
@@ -60,6 +60,8 @@ export async function refineProcessSpec(
       // Configuravel por `AI_THINKING` — ver src/aiThinking.ts. Nunca omitir:
       // omitir LIGA o thinking, que dividiria o `max_tokens` com o spec revisado.
       thinking: thinkingParam(config),
+      // `effort`, configuravel por `AI_EFFORT` — ver src/aiThinking.ts.
+      output_config: outputConfigParam(config),
       tools: [PROCESS_SPEC_TOOL],
       tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
       messages: [{ role: 'user', content: userContent }],

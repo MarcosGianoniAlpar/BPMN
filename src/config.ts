@@ -7,6 +7,8 @@ export interface AppConfig {
   maxOutputTokens: number;
   /** Ver src/aiThinking.ts: e uma alavanca de qualidade E de custo. */
   thinking: ThinkingMode;
+  /** Ver src/aiThinking.ts: a alavanca de custo mais direta que existe. */
+  effort: EffortLevel;
   rateLimit: RateLimitConfig;
 }
 
@@ -16,6 +18,20 @@ export interface AppConfig {
  * decide quanto pensar; no Sonnet 5 e o unico modo "ligado" que existe.
  */
 export type ThinkingMode = 'disabled' | 'adaptive';
+
+/**
+ * Quanto o modelo se esforca — pensa e age — antes de responder. O padrao da API
+ * e `high`, que e o que este projeto vinha pagando por OMISSAO desde o comeco,
+ * sem nunca ter sido escolhido.
+ *
+ * Referencia da API para o Sonnet 5, que e o que decide os numeros aqui: `medium`
+ * rende aproximadamente o que o Sonnet 4.6 rendia em `high`, e `high` rende o que
+ * o 4.6 rendia em `max`. Ou seja, a escala inteira desceu um degrau com o modelo
+ * novo, e continuar em `high` e pagar por um degrau que talvez nao seja preciso.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Teto de chamadas de IA. A app e publica e sem login: sem isso, quem tiver a URL
@@ -42,6 +58,25 @@ function lerThinking(valor: string | undefined): ThinkingMode {
   throw new Error(
     `AI_THINKING invalido: "${valor}". Use "disabled" ou "adaptive". ` +
       '(O modo "enabled"/budget_tokens foi removido no Sonnet 5 e devolve erro 400.)',
+  );
+}
+
+/**
+ * Le `AI_EFFORT`. Explode em valor invalido pelo mesmo motivo do `AI_THINKING`:
+ * um typo (`AI_EFFORT=hight`) cairia no padrao e a rodada de teste aconteceria no
+ * nivel errado, depois de paga.
+ *
+ * O padrao e `high` DE PROPOSITO, e nao `medium`: `high` e o que a API usa quando
+ * o campo e omitido, que e exatamente o que este projeto fazia antes deste commit.
+ * Ou seja, o padrao mantem o comportamento atual e o upgrade nao muda nada em
+ * silencio. Descer para `medium` e uma decisao a tomar olhando o resultado, nao um
+ * efeito colateral de subir o SDK.
+ */
+function lerEffort(valor: string | undefined): EffortLevel {
+  if (valor === undefined || valor === '') return 'high';
+  if ((EFFORT_LEVELS as readonly string[]).includes(valor)) return valor as EffortLevel;
+  throw new Error(
+    `AI_EFFORT invalido: "${valor}". Use um de: ${EFFORT_LEVELS.join(', ')}.`,
   );
 }
 
@@ -73,6 +108,7 @@ export function loadConfig(): AppConfig {
     // saida; com 64000 ela cabe com folga.
     maxOutputTokens: Number(process.env.MAX_OUTPUT_TOKENS ?? '64000'),
     thinking: lerThinking(process.env.AI_THINKING),
+    effort: lerEffort(process.env.AI_EFFORT),
     rateLimit: {
       // Folgado para o especialista iterando num documento, apertado para quem
       // quiser rodar a app em loop. 0 desliga o limite.

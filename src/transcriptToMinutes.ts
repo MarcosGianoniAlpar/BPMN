@@ -7,7 +7,7 @@ import type { MeetingMinutes } from './types/meeting-minutes.js';
 import { cleanText } from './textCleanup.js';
 import { AiCallError } from './aiError.js';
 import { validateMeetingMinutes } from './validate.js';
-import { thinkingParam } from './aiThinking.js';
+import { thinkingParam, outputConfigParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/transcript-to-minutes.md');
@@ -130,6 +130,8 @@ export async function transcriptToMinutes(
       // padrao `disabled` custa menos e, das tres chamadas, esta e a mais
       // proxima do teto de 60s do Vercel: pensar tambem gasta relogio.
       thinking: thinkingParam(config),
+      // `effort`, configuravel por `AI_EFFORT` — ver src/aiThinking.ts.
+      output_config: outputConfigParam(config),
       tools: [MEETING_MINUTES_TOOL],
       tool_choice: { type: 'tool', name: MEETING_MINUTES_TOOL.name },
       messages: [

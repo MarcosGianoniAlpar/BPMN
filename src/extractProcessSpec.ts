@@ -5,7 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 import { AiCallError } from './aiError.js';
 import { inlineSchemaRefs } from './toolSchema.js';
-import { thinkingParam } from './aiThinking.js';
+import { thinkingParam, outputConfigParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/extract-process.md');
@@ -328,6 +328,9 @@ export async function extractProcessSpec(
       // NUNCA omitir o campo: no Sonnet 5 omitir LIGA o thinking, e ele divide
       // o `max_tokens` com a resposta.
       thinking: thinkingParam(config),
+      // `effort`, configuravel por `AI_EFFORT`. Sem este campo a API assume
+      // `high` — o que estava acontecendo por omissao. Ver src/aiThinking.ts.
+      output_config: outputConfigParam(config),
       tools: [PROCESS_SPEC_TOOL],
       tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
       messages: [

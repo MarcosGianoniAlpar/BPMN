@@ -2,14 +2,13 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 
 /**
- * Monta o campo `thinking` das chamadas de IA, em UM lugar so.
+ * As duas alavancas das chamadas de IA — quanto o modelo pensa (`thinking`) e
+ * quanto ele se esforca (`output_config.effort`) — em UM lugar so, para as tres
+ * chamadas (extracao, refino, ata).
  *
- * Por que existe um cast aqui: o SDK instalado e o 0.68.0, cujo
- * `ThinkingConfigParam` so conhece `enabled | disabled` — o modo `adaptive` e
- * mais novo que ele. A API ACEITA `adaptive` (e no Sonnet 5 e o unico modo
- * "ligado"; `budget_tokens` foi removido e devolve 400); quem nao conhece e o
- * pacote de tipos. O cast e a ponte ate o upgrade do SDK, e fica confinado a
- * esta funcao em vez de espalhado pelas tres chamadas.
+ * Historico: ate o SDK 0.68 havia um cast aqui, porque o `ThinkingConfigParam`
+ * daquela versao so conhecia `enabled | disabled` e o modo `adaptive` era mais
+ * novo que o pacote de tipos. O SDK 0.115 tipa `adaptive`, e o cast saiu.
  *
  * Por que isto e configuravel e nao fixo:
  *
@@ -31,7 +30,20 @@ import type { AppConfig } from './config.js';
  */
 export function thinkingParam(config: AppConfig): Anthropic.ThinkingConfigParam {
   if (config.thinking === 'disabled') return { type: 'disabled' };
-  return { type: 'adaptive' } as unknown as Anthropic.ThinkingConfigParam;
+  return { type: 'adaptive' };
+}
+
+/**
+ * Monta o `output_config` das chamadas. O `effort` vai DENTRO dele — nao e campo
+ * de raiz da requisicao, e mandar na raiz e um erro silencioso: o campo e
+ * ignorado e a chamada roda no padrao `high` como se nada tivesse sido pedido.
+ *
+ * A alavanca de custo mais direta do projeto, e a unica que estava intocada: sem
+ * este campo a API assume `high`, entao todas as chamadas pagas ate hoje foram no
+ * segundo nivel mais caro sem ninguem ter escolhido isso.
+ */
+export function outputConfigParam(config: AppConfig): Anthropic.MessageCreateParams['output_config'] {
+  return { effort: config.effort };
 }
 
 /**
@@ -42,7 +54,9 @@ export function thinkingParam(config: AppConfig): Anthropic.ThinkingConfigParam 
  * linha, ligar a flag pareceria de graca ate a fatura chegar.
  */
 export function descreverThinking(config: AppConfig): string {
-  return config.thinking === 'adaptive'
-    ? 'thinking: adaptive (os tokens de raciocinio contam no max_tokens e na fatura)'
-    : 'thinking: disabled';
+  const modo =
+    config.thinking === 'adaptive'
+      ? 'thinking: adaptive (os tokens de raciocinio contam no max_tokens e na fatura)'
+      : 'thinking: disabled';
+  return `${modo} · effort: ${config.effort}`;
 }
