@@ -381,11 +381,52 @@ custa retrabalho nas duas.
   e global/dia; quando um documento dispara 7 chamadas, a unidade de gasto deixa
   de ser a chamada.
 
-**Ainda não validado no desenho:** L1 e L2 passam em 148 testes determinísticos,
-mas **o PNG não foi olhado** — e a própria Task L nasceu de dois bugs que
-nenhum log pegou. Exportar o PNG de um diagrama com gateway de 3 ramos e de um
-com a ponte cortada é a conferência que falta. Não gasta API: dá para carregar
-uma fixture no app local.
+**Ainda não validado no desenho:** L1 e L2 passam em 157 testes determinísticos e
+o bpmnlint não acusa forma sobreposta em nenhuma fixture, mas **o desenho não foi
+olhado como imagem** — e a própria Task L nasceu de dois bugs que nenhum log
+pegou. Os arquivos já estão prontos: `npm run fixtures:bpmn` grava os 6 em
+`output/fixtures/`; arraste `faixa-de-valor.bpmn` (gateway de 3 ramos, é o teste do
+L1) e `ponte-cortada.bpmn` (o do L2) no app local ou no bpmn.io. Não gasta API.
+**O bpmnlint não substitui esse olho:** ele valida FORMAS, não `bpmndi:BPMNLabel`
+— rótulo sobreposto não dispara regra nenhuma lá.
+
+---
+
+## 📍 Onde paramos — 2026-08-05, fim do dia
+
+**Estado do git:** branch `dev`, árvore limpa, **tudo empurrado** para
+`origin/dev`. O `main` (PROD) continua parado em `b5e191b` — nada disso foi para
+produção, e ir precisa de aprovação explícita.
+
+Cinco commits no dia, nesta ordem:
+
+| commit | o quê |
+|---|---|
+| `01d5990` | Os 5 blocos de 2026-08-04 que estavam **fora do git** (~1950 linhas) |
+| `c66ea66` | **L1** rótulos de aresta empilhados + **L2** órfão fora da camada 0 |
+| `4281122` | **M1** integridade referencial — no schema **e** nos dois prompts |
+| `1d4f9e8` | Lint das fixtures + `npm run fixtures:bpmn`, **e o bug que ele achou no próprio lint** |
+| `d2f5425` | **SDK 0.68 → 0.115** + `AI_EFFORT` (padrão `high` = comportamento anterior) |
+
+Suíte: **139 → 157 testes**, 0 falhas. `typecheck`, `typecheck:test`, `lint` e
+`typecheck:vercel` limpos em todos os commits.
+
+**Nada gastou API hoje.** O gasto acumulado segue em US$ 2,26 / 22 chamadas.
+
+**Retomar por aqui**, na ordem da tabela acima:
+
+1. **Olhar os `.bpmn`** (~15min, grátis) — fecha o L1/L2. Arquivos já gerados.
+2. **Task N · `strict: true`** (~1h grátis + 1 geração) — a metade grátis é podar
+   `minLength`/`minItems`/`pattern` do schema que vai para a ferramenta, em
+   `src/toolSchema.ts`, com teste fixando isso. **Antes de escrever código,
+   resolver as duas incertezas de leitura** listadas na Task N — em especial se
+   `strict` conversa com `tool_choice` forçado, porque se não, a task morre ali.
+3. **Ratificar a Task I** — decisão do dono, e é o que destrava K, F1 e F2.
+4. **Task K · chunking** — ler "a forma da K" antes da primeira linha de código.
+
+**Se for gastar uma geração**, faça a da ata de PO já com `AI_EFFORT=medium`: uma
+chamada responde duas perguntas de uma vez — se o M1 parou o escorregão dos
+gateways intermediários, e se `medium` basta para este trabalho.
 
 **Decisão pequena ainda aberta:** idioma das `unresolved_questions`. Hoje o
 diagrama sai 100% no idioma do documento e as perguntas saem em português. Ou é
