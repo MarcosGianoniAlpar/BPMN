@@ -6,12 +6,17 @@ import { loadConfig } from './config.js';
 import { isSupportedFilename } from './documentLoader.js';
 import {
   sendJson,
+  rejectRequest,
   decodeFilename,
+  clientIp,
   runGenerate,
   runRefine,
+  runMinutes,
   runExtractText,
   sendUsage,
   handleProjectsApi,
+  handleMinutesApi,
+  runUpdateMinutes,
   runFreeze,
 } from './httpHandlers.js';
 
@@ -26,6 +31,7 @@ const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
@@ -96,14 +102,14 @@ async function handleExtractText(req: IncomingMessage, res: ServerResponse): Pro
   const rawName = req.headers['x-filename'];
   const filename = decodeFilename((Array.isArray(rawName) ? rawName[0] : rawName) ?? '');
   if (!filename || !isSupportedFilename(filename)) {
-    return sendJson(res, 400, { error: 'Nome de arquivo ausente ou tipo nao suportado.' });
+    return rejectRequest(res, 'POST', '/api/extract-text', 400, 'Nome de arquivo ausente ou tipo nao suportado.');
   }
 
   let buffer: Buffer;
   try {
     buffer = await readBodyBuffer(req);
   } catch (err) {
-    return sendJson(res, 413, { error: err instanceof Error ? err.message : 'Upload invalido.' });
+    return rejectRequest(res, 'POST', '/api/extract-text', 413, err instanceof Error ? err.message : 'Upload invalido.');
   }
 
   return runExtractText(res, buffer, filename);
@@ -111,19 +117,59 @@ async function handleExtractText(req: IncomingMessage, res: ServerResponse): Pro
 
 async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = loadConfig();
-  let payload: { text?: string; filename?: string };
+  let payload: { text?: string; filename?: string; minutesId?: string };
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', '/api/generate', 400, 'JSON invalido.');
   }
 
   const text = typeof payload.text === 'string' ? payload.text.trim() : '';
   if (!text) {
-    return sendJson(res, 400, { error: 'Documento vazio ou invalido.' });
+    return rejectRequest(res, 'POST', '/api/generate', 400, 'Documento vazio ou invalido.');
   }
 
-  return runGenerate(res, config, text, payload.filename ?? 'documento');
+  return runGenerate(res, config, {
+    text,
+    filename: payload.filename ?? 'documento',
+    minutesId: payload.minutesId,
+    ip: clientIp(req.headers, req.socket.remoteAddress),
+  });
+}
+
+async function handleUpdateMinutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  minutesId: string,
+): Promise<void> {
+  let payload: { markdown?: string };
+  try {
+    payload = JSON.parse(await readBody(req));
+  } catch {
+    return rejectRequest(res, 'PUT', `/api/minutes/${minutesId}`, 400, 'JSON invalido.');
+  }
+  return runUpdateMinutes(res, minutesId, payload);
+}
+
+async function handleMinutes(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const config = loadConfig();
+  let payload: { text?: string; filename?: string };
+  try {
+    payload = JSON.parse(await readBody(req));
+  } catch {
+    return rejectRequest(res, 'POST', '/api/minutes', 400, 'JSON invalido.');
+  }
+
+  const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+  if (!text) {
+    return rejectRequest(res, 'POST', '/api/minutes', 400, 'Transcricao vazia ou invalida.');
+  }
+
+  return runMinutes(res, config, {
+    transcript: text,
+    filename: payload.filename ?? 'transcricao',
+    ip: clientIp(req.headers, req.socket.remoteAddress),
+  });
 }
 
 async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -138,14 +184,14 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', '/api/refine', 400, 'JSON invalido.');
   }
 
   const text = typeof payload.text === 'string' ? payload.text.trim() : '';
   const spec = payload.spec;
   const answers = Array.isArray(payload.answers) ? payload.answers : [];
   if (!text || !spec || answers.length === 0) {
-    return sendJson(res, 400, { error: 'Faltam texto, ProcessSpec ou respostas.' });
+    return rejectRequest(res, 'POST', '/api/refine', 400, 'Faltam texto, ProcessSpec ou respostas.');
   }
 
   return runRefine(res, config, {
@@ -154,6 +200,7 @@ async function handleRefine(req: IncomingMessage, res: ServerResponse): Promise<
     projectId: typeof payload.projectId === 'string' ? payload.projectId : undefined,
     spec,
     answers,
+    ip: clientIp(req.headers, req.socket.remoteAddress),
   });
 }
 
@@ -166,7 +213,7 @@ async function handleFreeze(
   try {
     payload = JSON.parse(await readBody(req));
   } catch {
-    return sendJson(res, 400, { error: 'JSON invalido.' });
+    return rejectRequest(res, 'POST', `/api/projects/${projectId}/freeze`, 400, 'JSON invalido.');
   }
   return runFreeze(res, projectId, payload);
 }
@@ -196,6 +243,10 @@ const server = createServer((req, res) => {
     guard(handleRefine(req, res));
     return;
   }
+  if (method === 'POST' && url === '/api/minutes') {
+    guard(handleMinutes(req, res));
+    return;
+  }
   // POST /api/projects/{id}/freeze
   if (
     method === 'POST' &&
@@ -212,6 +263,24 @@ const server = createServer((req, res) => {
   // Relatorio de uso/custo
   if (method === 'GET' && url === '/api/usage') {
     guard(sendUsage(res));
+    return;
+  }
+
+  // PUT /api/minutes/{id} — salva as correcoes do especialista na ata
+  if (method === 'PUT' && segments[0] === 'api' && segments[1] === 'minutes' && segments[2]) {
+    guard(handleUpdateMinutes(req, res, segments[2]));
+    return;
+  }
+
+  // API de atas salvas (GET/DELETE)
+  if ((method === 'GET' || method === 'DELETE') && segments[0] === 'api' && segments[1] === 'minutes') {
+    guard(
+      (async () => {
+        if (!(await handleMinutesApi(method, segments, res)) && !res.headersSent) {
+          sendJson(res, 404, { error: 'Rota de ata nao encontrada.' });
+        }
+      })(),
+    );
     return;
   }
 

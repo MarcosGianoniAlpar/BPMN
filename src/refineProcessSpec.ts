@@ -4,7 +4,8 @@ import { dirname, resolve } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
-import { extractJson } from './extractProcessSpec.js';
+import { PROCESS_SPEC_TOOL, readSpecFromMessage } from './extractProcessSpec.js';
+import { thinkingParam, outputConfigParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/refine-process.md');
@@ -48,20 +49,27 @@ export async function refineProcessSpec(
     `<respostas_do_especialista>\n${answersText}\n</respostas_do_especialista>`,
   ].join('\n\n');
 
-  const message = await client.messages.create({
-    model: config.model,
-    max_tokens: config.maxOutputTokens,
-    system,
-    messages: [{ role: 'user', content: userContent }],
-  });
-
-  const text = message.content
-    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
+  // Streaming pelo mesmo motivo da extracao (ver `extractProcessSpec.ts`): sem
+  // ele o SDK capa o `max_tokens` em ~21333, muito abaixo dos 128000 do modelo.
+  // O refino devolve o ProcessSpec INTEIRO, entao e tao grande quanto a extracao.
+  const message = await client.messages
+    .stream({
+      model: config.model,
+      max_tokens: config.maxOutputTokens,
+      system,
+      // Configuravel por `AI_THINKING` — ver src/aiThinking.ts. Nunca omitir:
+      // omitir LIGA o thinking, que dividiria o `max_tokens` com o spec revisado.
+      thinking: thinkingParam(config),
+      // `effort`, configuravel por `AI_EFFORT` — ver src/aiThinking.ts.
+      output_config: outputConfigParam(config),
+      tools: [PROCESS_SPEC_TOOL],
+      tool_choice: { type: 'tool', name: PROCESS_SPEC_TOOL.name },
+      messages: [{ role: 'user', content: userContent }],
+    })
+    .finalMessage();
 
   return {
-    raw: extractJson(text),
+    raw: readSpecFromMessage(message),
     usage: {
       inputTokens: message.usage.input_tokens,
       outputTokens: message.usage.output_tokens,

@@ -1,6 +1,9 @@
 import type { AppConfig } from './config.js';
 import type { ProcessSpec } from './types/process-spec.js';
+import type { MeetingMinutes } from './types/meeting-minutes.js';
 import { extractProcessSpec } from './extractProcessSpec.js';
+import { transcriptToMinutes } from './transcriptToMinutes.js';
+import { renderMinutesMarkdown } from './minutesMarkdown.js';
 import { refineProcessSpec, type ClarificationAnswer } from './refineProcessSpec.js';
 import { validateProcessSpec, type ValidationIssue } from './validate.js';
 import { compileToBpmn } from './compiler.js';
@@ -10,7 +13,21 @@ import { colorizeBpmn } from './bpmnColor.js';
 import { lintBpmn, type LintResult } from './lintBpmn.js';
 
 export class ProcessSpecValidationError extends Error {
-  constructor(public readonly issues: ValidationIssue[]) {
+  constructor(
+    public readonly issues: ValidationIssue[],
+    /**
+     * Tokens da chamada que produziu o spec invalido. A IA cobra por eles mesmo
+     * quando o resultado nao passa na validacao — sem carregar o uso ate aqui,
+     * essa geracao paga sumiria do relatorio de custo.
+     */
+    public readonly usage?: { inputTokens: number; outputTokens: number },
+    /**
+     * O que a IA devolveu, cru. Uma geracao paga que falha na validacao tem de
+     * deixar evidencia: sem isto, a unica pista e a mensagem de erro, e ja
+     * aconteceu de ela nao bastar para dizer o que estava errado.
+     */
+    public readonly raw?: unknown,
+  ) {
     super(
       `ProcessSpec invalido (${issues.length} problema(s)):\n` +
         issues.map((i) => `  - [${i.code}] ${i.message}`).join('\n'),
@@ -24,11 +41,23 @@ export interface PipelineResult {
   semanticXml: string;
   layoutXml: string;
   layoutWarnings: unknown[];
+  /**
+   * Defeitos do ProcessSpec que foram consertados para o diagrama poder sair.
+   * Precisam chegar ate a tela: o especialista tem de saber onde conferir.
+   */
+  specWarnings: ValidationIssue[];
   lint: LintResult;
   usage: { inputTokens: number; outputTokens: number };
 }
 
-export type PipelineStage = 'extract' | 'validate' | 'compile' | 'layout' | 'lint';
+export type PipelineStage =
+  | 'minutes'
+  | 'render'
+  | 'extract'
+  | 'validate'
+  | 'compile'
+  | 'layout'
+  | 'lint';
 
 export interface ProgressUpdate {
   stage: PipelineStage;
@@ -53,13 +82,21 @@ async function buildDiagram(
   onProgress({ stage: 'validate', status: 'start' });
   const validation = validateProcessSpec(raw);
   if (!validation.valid) {
-    throw new ProcessSpecValidationError(validation.errors);
+    throw new ProcessSpecValidationError(validation.errors, usage, raw);
   }
   const spec = raw as ProcessSpec;
+  // Os avisos vao para o progresso E para o resultado. Reparo silencioso seria
+  // pior que o aborto: o especialista veria um diagrama com uma seta a menos e
+  // acharia que a IA leu o documento assim.
+  for (const aviso of validation.warnings) {
+    onProgress({ stage: 'validate', status: 'done', detail: `aviso: ${aviso.message}` });
+  }
   onProgress({
     stage: 'validate',
     status: 'done',
-    detail: `${spec.nodes.length} nós, ${spec.flows.length} fluxos (saída da IA)`,
+    detail:
+      `${spec.nodes.length} nós, ${spec.flows.length} fluxos (saída da IA)` +
+      (validation.warnings.length ? ` · ${validation.warnings.length} aviso(s)` : ''),
   });
 
   // Duas rotas: com raias, geramos geometria ciente de lanes/pools (o
@@ -108,7 +145,15 @@ async function buildDiagram(
         : `${lint.errors} erro(s), ${lint.warnings} aviso(s)`,
   });
 
-  return { spec, semanticXml, layoutXml, layoutWarnings, lint, usage };
+  return {
+    spec,
+    semanticXml,
+    layoutXml,
+    layoutWarnings,
+    specWarnings: validation.warnings,
+    lint,
+    usage,
+  };
 }
 
 /**
@@ -127,6 +172,46 @@ export async function runPipeline(
     detail: `${usage.inputTokens}+${usage.outputTokens} tokens`,
   });
   return buildDiagram(raw, usage, onProgress);
+}
+
+export interface MinutesResult {
+  minutes: MeetingMinutes;
+  /** A ata renderizada em Markdown — e este texto que alimenta o diagrama. */
+  markdown: string;
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Modo transcricao, passo 1: transcricao crua -> ata estruturada -> Markdown.
+ *
+ * Deliberadamente NAO encadeia a geracao do diagrama. Sao duas chamadas de IA
+ * separadas para (a) o especialista revisar/corrigir a ata antes de gastar a
+ * segunda chamada e (b) cada invocacao caber no teto de 60s do Vercel Hobby.
+ * O diagrama sai depois, rodando `runPipeline` sobre o Markdown da ata.
+ */
+export async function runMinutesFromTranscript(
+  transcriptText: string,
+  config: AppConfig,
+  onProgress: ProgressFn = () => {},
+): Promise<MinutesResult> {
+  onProgress({ stage: 'minutes', status: 'start' });
+  const { minutes, usage } = await transcriptToMinutes(transcriptText, config);
+  const steps = minutes.process_flow?.steps?.length ?? 0;
+  onProgress({
+    stage: 'minutes',
+    status: 'done',
+    detail: `${usage.inputTokens}+${usage.outputTokens} tokens · ${minutes.topics?.length ?? 0} tópico(s), ${steps} etapa(s) de fluxo`,
+  });
+
+  onProgress({ stage: 'render', status: 'start' });
+  const markdown = renderMinutesMarkdown(minutes);
+  onProgress({
+    stage: 'render',
+    status: 'done',
+    detail: `ata de ${markdown.split('\n').length} linhas gerada por código`,
+  });
+
+  return { minutes, markdown, usage };
 }
 
 /**

@@ -1,20 +1,14 @@
 # bpmn-pipeline
 
 Pipeline **LLM → BPMN**: recebe um documento de processo (ata de reuniao,
-descricao de procedimento) e produz um diagrama **BPMN 2.0** valido.
+descricao de procedimento, transcricao de reuniao) e produz um diagrama
+**BPMN 2.0** valido.
 
 A ideia central: a LLM **nunca** gera XML. Ela extrai um modelo intermediario
 rastreavel — o **`ProcessSpec`** (JSON com evidencia de origem e perguntas de
 esclarecimento) — e um compilador **deterministico** transforma isso em BPMN.
 Isso separa a interpretacao probabilistica da geracao, permitindo validar,
 testar, auditar e trocar de modelo sem refazer a geometria.
-
-Estado atual: **Fase 2** — sobre o MVP da Fase 1, agora com ingestao de
-`.pdf`/`.docx`, validacao com `bpmnlint` no pipeline, harness de avaliacao,
-**persistencia de projetos e versoes** (SQLite), **edicao no bpmn-js Modeler**
-com "congelar versao", e **raias/pools desenhados**. A visao completa (API
-Python, servico BPMN separado, fila, OCR, banco vetorial, infra GCP) esta em
-`docs/architecture.md`.
 
 > **Fonte da verdade (Opcao A):** o `ProcessSpec` e a unica fonte da verdade. A
 > edicao pelo especialista e estrutural (muta o ProcessSpec → recompila,
@@ -26,98 +20,140 @@ Python, servico BPMN separado, fila, OCR, banco vetorial, infra GCP) esta em
 
 ```
 documento (.txt/.md/.pdf/.docx)
+   → [modo transcricao] transcricao crua → ata estruturada  (src/transcriptToMinutes.ts)
+   →                    ata estruturada  → Markdown         (src/minutesMarkdown.ts)
    → extracao factual pela LLM        (src/extractProcessSpec.ts)
    → ProcessSpec JSON com evidencias  (schemas/process-spec.schema.json)
    → validacao (schema + semantica)   (src/validate.ts)          [nivel 1]
-   → compilador deterministico        (src/compiler.ts  ->  bpmn-moddle)
+   → compilador deterministico        (src/compiler.ts / src/laneLayout.ts)
    → layout automatico                (src/layout.ts / src/laneLayout.ts)
+   → colorizacao (paleta Alpar)       (src/bpmnColor.ts)
    → bpmnlint                         (src/lintBpmn.ts)          [nivel 2]
    → .bpmn pronto para o bpmn-js
 ```
 
+**Dois caminhos de layout.** Com raias, o `src/laneLayout.ts` gera a geometria
+propria (pool, faixas, rotulos de aresta). Sem raias, `src/compiler.ts` +
+`bpmn-auto-layout`. O orquestrador escolhe por `hasLanes`.
+
 ## Requisitos
 
-- Node.js >= 20
+- Node.js >= 22.5
 - Uma chave de API Anthropic (`ANTHROPIC_API_KEY`)
+- Um Postgres (Supabase) em `DATABASE_URL` — so para a interface web
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env      # e preencha ANTHROPIC_API_KEY
+cp .env.example .env      # e preencha ANTHROPIC_API_KEY (e DATABASE_URL)
 ```
 
-O modelo padrao e `claude-sonnet-5` (melhor custo/qualidade para extracao
-estruturada). Para comparar, troque `ANTHROPIC_MODEL` no `.env` por
-`claude-fable-5` ou `claude-opus-4-8`.
+O modelo padrao e `claude-sonnet-5`. Todos os parametros ajustaveis (modelo,
+teto de tokens, limites de uso, banco) estao comentados no `.env.example`.
 
-## Uso
+## Interface web
 
 ```bash
-npm run dev -- test-documents/exemplo-solicitacao-compra.md
+npm run web    # http://localhost:3000
 ```
 
-Isso gera, em `output/`:
+Duas portas de entrada, em abas:
+
+1. **Ata ou documento → diagrama** — arraste um `.txt`/`.md`/`.pdf`/`.docx`.
+2. **Transcricao → ata → diagrama** — para transcricao de reuniao (fala solta,
+   ruido, encoding ruim). A IA produz uma **ata estruturada**, o especialista
+   **revisa na tela**, e so entao o diagrama e gerado.
+
+A tela do diagrama:
+
+- renderiza o **BPMN** com o `bpmn-js` **Modeler** (zoom/pan e **edicao**);
+- lista cada **elemento com a evidencia** (o trecho do documento que o originou)
+  — clicar destaca o elemento no diagrama, e vice-versa;
+- mostra a **validacao BPMN** (avisos/erros do `bpmnlint`);
+- mostra as **perguntas de esclarecimento** que a IA nao resolveu sozinha — e
+  permite **responde-las na propria tela**: as respostas voltam para a IA, que
+  revisa o `ProcessSpec` e o diagrama e recompilado (loop de esclarecimento);
+- **salva automaticamente** cada geracao/revisao como uma **versao** do projeto;
+- permite **"Congelar versao"** (snapshot com as edicoes manuais de geometria,
+  que nao e mais re-layoutado);
+- exporta **.bpmn / SVG / PNG** (com as cores da paleta);
+- exibe o **custo** da geracao e o acumulado (painel "Uso & custo").
+
+## CLI
+
+```bash
+npm run dev -- <arquivo>                # documento -> diagrama
+npm run dev -- <arquivo> --transcricao  # transcricao -> ata -> diagrama (2 chamadas)
+npm run dev -- <arquivo> --so-ata       # para na ata (1 chamada)
+```
+
+Gera, em `output/`:
 
 | Arquivo | Conteudo |
 |---|---|
 | `*.process-spec.json` | o modelo intermediario extraido (olhe este primeiro) |
 | `*.semantic.bpmn` | BPMN sem geometria (so estrutura) |
-| `*.bpmn` | BPMN com layout automatico — abra no [bpmn.io](https://demo.bpmn.io) ou no bpmn-js |
-
-E imprime no terminal: contagem de nos/flows, tokens usados, warnings de layout
-e as **perguntas de esclarecimento** que a IA nao resolveu sozinha.
+| `*.bpmn` | BPMN com layout — abra no [bpmn.io](https://demo.bpmn.io) ou no bpmn-js |
+| `*.ata.md` / `*.ata.json` | a ata estruturada (modo transcricao) |
 
 > Dica de fluxo: valide o `*.process-spec.json` a olho **antes** de se importar
 > com o diagrama. E na extracao que moram os erros, e e mais barato corrigi-los
 > ali do que depois de virar XML.
 
-## Interface visual (MVP para demonstrar)
+## Custo e limites de uso
 
-Uma interface web que renderiza o diagrama, as evidências e as perguntas —
-ideal para mostrar como MVP.
+A chave da API e da empresa e **a aplicacao no ar e publica**. Duas defesas, as
+duas configuraveis no `.env`:
 
-```bash
-npm run web
-```
+- **`RATE_LIMIT_PER_IP_HOUR`** — contem o abuso de um visitante.
+- **`RATE_LIMIT_GLOBAL_PER_DAY`** — e este que poe teto na **fatura**; trocar de
+  IP e trivial, entao o limite por IP sozinho nao limita gasto nenhum.
 
-Abra `http://localhost:3000`, arraste uma ata `.txt`/`.md`/`.pdf`/`.docx` e ela:
+O contador vive numa tabela do Postgres (`rate_limit`), nao em memoria: em
+serverless nao ha processo de longa duracao para guardar estado. O consumo
+acumulado fica em `GET /api/usage` e no painel "Uso & custo" da home.
 
-- roda o mesmo pipeline (extração → validação → compilação → layout → bpmnlint);
-- renderiza o **BPMN** com o `bpmn-js` **Modeler** (zoom/pan e **edição**);
-- lista cada **elemento com a evidência** (o trecho da ata que o originou) —
-  clicar destaca o elemento no diagrama, e vice-versa;
-- mostra a **validação BPMN** (avisos/erros do `bpmnlint`);
-- mostra as **perguntas de esclarecimento** que a IA não resolveu sozinha —
-  e permite **respondê-las na própria tela**: ao clicar em "Aplicar respostas
-  e recompilar", as respostas voltam para a IA, que revisa o `ProcessSpec`
-  (cria as ramificações que faltavam, remove as perguntas respondidas) e o
-  diagrama é recompilado já completo (loop de esclarecimento);
-- **salva automaticamente** cada geração/revisão como uma **versão** do projeto;
-  a home lista os **processos salvos** para reabrir/excluir;
-- permite **editar o diagrama** e **"Congelar versão"** (snapshot com as edições
-  manuais, que não é mais re-layoutado);
-- exporta **.bpmn / SVG / PNG**;
-- exibe métricas (nós, fluxos, perguntas, tokens).
-
-Servida localmente (Node + `bpmn-js` do `node_modules`) — sem CDN, funciona
-offline. Persiste em `data/bpmn.db` (SQLite nativo do Node ≥ 22.5). Precisa da
-`ANTHROPIC_API_KEY` no `.env`, como o CLI.
+**Ao desenvolver:** `npm run dev`, `npm run eval` e as rotas `/api/generate`,
+`/api/minutes` e `/api/refine` gastam dinheiro real. Testes deterministicos
+(`npm test`, typecheck, lint, build) **nao gastam nada**.
 
 ## Scripts
 
 ```bash
-npm run dev -- <arquivo>   # roda o pipeline (CLI) — aceita .txt/.md/.pdf/.docx
-npm run web                # sobe a interface visual em http://localhost:3000
-npm run eval               # avalia a extração contra os gabaritos (evaluations/)
-npm run eval -- --cached   # avalia sem chamar a IA (usa output/ já gerado)
-npm run build              # compila TypeScript para dist/
-npm run typecheck          # checagem de tipos sem emitir
-npm run gen:types          # regenera src/types/process-spec.ts a partir do schema
-npm run lint               # eslint
-npm run lint:bpmn -- output/exemplo-solicitacao-compra.bpmn   # bpmnlint em um .bpmn
-npm run format             # prettier
+npm run web                  # interface web em http://localhost:3000
+npm run dev -- <arquivo>     # pipeline pela CLI — GASTA API
+npm run eval                 # avalia a extracao contra os gabaritos — GASTA API
+npm test                     # suite deterministica (node:test) — nao gasta API
+npm run test:watch           # a suite em modo watch
+npm run typecheck            # tipos de src/
+npm run typecheck:test       # tipos de test/
+npm run typecheck:vercel     # compila e checa as funcoes serverless de api/
+npm run lint                 # eslint
+npm run lint:bpmn -- output/exemplo.bpmn   # bpmnlint em um .bpmn
+npm run format               # prettier
+npm run gen:types            # regenera os tipos a partir dos schemas
+npm run backup               # dump do Postgres em backups/ (precisa de pg_dump)
 ```
+
+## Testes
+
+A suite cobre a **metade deterministica** do pipeline — que e o ponto da
+arquitetura: se a LLM so produz o `ProcessSpec`, tudo depois dele e testavel sem
+gastar um centavo de API.
+
+```bash
+npm test
+```
+
+Coberto hoje: validacao (schema + regras semanticas), os dois compiladores
+(com e sem raias), geometria do layout de raias (posicao por camada/faixa,
+voltas roteadas por baixo, rotulos fora da linha), colorizacao, render da ata em
+Markdown, limpeza de texto e estimativa de custo. Os testes usam `ProcessSpec`
+sinteticos de `test/fixtures.ts` — **nenhum chama a IA**.
+
+O CI (`.github/workflows/ci.yml`) roda typecheck, lint, a suite e o build a cada
+push e em todo PR para `main`.
 
 ## Estrutura
 
@@ -125,48 +161,75 @@ npm run format             # prettier
 bpmn-pipeline/
 ├── src/
 │   ├── index.ts               # CLI
-│   ├── server.ts              # servidor web + API (gerar/refinar/projetos/freeze)
-│   ├── orchestrator.ts        # encadeia extracao -> validacao -> compilacao -> layout -> lint
+│   ├── server.ts              # servidor do dev local (npm run web)
+│   ├── httpHandlers.ts        # nucleo HTTP compartilhado (dev local + Vercel)
+│   ├── orchestrator.ts        # extracao -> validacao -> compilacao -> layout -> cor -> lint
 │   ├── documentLoader.ts      # le/extrai texto (.txt/.md/.pdf/.docx)
-│   ├── extractProcessSpec.ts  # chamada a LLM -> ProcessSpec bruto
+│   ├── textCleanup.ts         # mojibake e caracteres invisiveis (antes de gastar tokens)
+│   ├── transcriptToMinutes.ts # transcricao crua -> ata estruturada (IA, tool use)
+│   ├── minutesMarkdown.ts     # ata estruturada -> Markdown (deterministico)
+│   ├── extractProcessSpec.ts  # chamada a LLM -> ProcessSpec (tool use forcado)
 │   ├── refineProcessSpec.ts   # segunda passada (loop de esclarecimento)
 │   ├── validate.ts            # schema JSON + regras semanticas (nivel 1)
-│   ├── compiler.ts            # ProcessSpec -> BPMN XML (bpmn-moddle), sem raias
-│   ├── layout.ts              # bpmn-auto-layout (greenfield, processos planos)
+│   ├── compiler.ts            # ProcessSpec -> BPMN XML, sem raias
+│   ├── layout.ts              # bpmn-auto-layout (processos planos)
 │   ├── laneLayout.ts          # layout ciente de raias/pools (gera DI proprio)
+│   ├── bpmnNodes.ts           # traducao tipo do spec -> elemento BPMN (um lugar so)
+│   ├── bpmnColor.ts           # colorizacao da DI com a paleta Alpar
 │   ├── lintBpmn.ts            # bpmnlint programatico (nivel 2)
-│   ├── store.ts               # persistencia SQLite (projetos + versoes)
+│   ├── store.ts               # persistencia Postgres (projetos, versoes, uso, rate limit)
+│   ├── pricing.ts             # tabela de precos -> custo estimado
 │   ├── eval/                  # harness de avaliacao (runner + comparador)
-│   ├── config.ts              # config via .env
-│   └── types/process-spec.ts  # tipos gerados do schema
-├── schemas/process-spec.schema.json   # fonte da verdade do modelo
-├── prompts/                           # prompts de extracao e refinamento
-├── public/                            # frontend (Modeler, evidencias, versoes)
-├── evaluations/                       # gabaritos + relatorios de avaliacao
-├── test-documents/                    # atas reais (nao versionadas)
-├── data/                              # banco SQLite local (nao versionado)
-├── output/                            # saidas geradas
-└── docs/
+│   └── types/                 # tipos gerados dos schemas
+├── api/                       # funcoes serverless do Vercel (importam de dist/)
+├── test/                      # suite deterministica + fixtures
+├── schemas/                   # process-spec e meeting-minutes (fonte da verdade)
+├── prompts/                   # prompts de extracao, refino e ata
+├── public/                    # frontend (Modeler, evidencias, versoes)
+├── scripts/                   # copy-vendor, backup-db
+├── evaluations/               # gabaritos + relatorios
+├── test-documents/            # documentos reais (nao versionados)
+└── docs/                      # arquitetura, regras de mapeamento, proximos passos
 ```
+
+## Deploy
+
+Vercel: estatico (`public/`) + funcoes serverless (`api/`), com `framework: null`
+e `outputDirectory: public`. Persistencia em Supabase/Postgres pelo pooler de
+transacao (6543). O `includeFiles` do `vercel.json` empacota o que o tracer nao
+detecta (`@napi-rs/canvas`, build legacy do `pdfjs`, `schemas/`, `prompts/`).
+
+**Branches:** `dev` gera Preview; `main` e **producao** (deploy automatico). Ver
+`CLAUDE.md` para as regras de trabalho.
+
+> **Teto de 60s.** No plano Hobby cada funcao morre em 60s (o `maxDuration=300`
+> do codigo e capado). Por isso o modo transcricao e **duas chamadas separadas**:
+> encadear ata + diagrama numa requisicao so estouraria o limite.
+
+## Backup
+
+O plano free do Supabase **nao faz backup automatico**.
+
+```bash
+npm run backup             # dump completo em backups/
+npm run backup -- --so-dados
+```
+
+Precisa do `pg_dump` no PATH. O script troca a porta 6543 (pooler de transacao,
+onde o `pg_dump` nao opera) por 5432 automaticamente. A pasta `backups/` esta no
+`.gitignore`: **guarde uma copia fora do Supabase**.
 
 ## Escopo
 
-Suportado: start/end event, user task, service task, exclusive gateway,
-sequence flow, perguntas de esclarecimento, evidencia por elemento.
+Suportado: start/end event, user task, service task, **exclusive gateway**,
+**parallel gateway**, **evento intermediario de timer e de mensagem**, sequence
+flow, **raias e pools desenhados** (participante externo vira pool caixa-preta),
+perguntas de esclarecimento e evidencia por elemento.
 
-**Raias/pools desenhados:** quando o `ProcessSpec` tem `lanes`, o diagrama usa um
-layout ciente de raias (`src/laneLayout.ts`) que gera a geometria (DI) das faixas
-e do pool — X pela camada do fluxo, Y pela raia — em vez do `bpmn-auto-layout`
-(que so posiciona o fluxo plano). Participantes externos viram pools caixa-preta.
-Processos sem raias continuam pelo caminho `compiler.ts` + `bpmn-auto-layout`.
+Fora do escopo (proximas fases): **message flows entre pools**, inclusive
+gateways, boundary events, subprocessos, multiplos documentos, correcao
+automatica via JSON Patch, OCR de PDF escaneado.
 
-Fora do escopo (proximas fases): parallel/inclusive gateways, timers, boundary
-events, **message flows entre pools**, subprocessos, multiplos documentos,
-correcao automatica via JSON Patch, OCR de PDF escaneado.
-
-## Proximos passos imediatos
-
-- [ ] Rodar contra 3–5 documentos reais e revisar os `ProcessSpec` a mao,
-      salvando os gabaritos em `evaluations/expected/`.
-- [ ] Comparar qualidade Fable 5 × Sonnet com `npm run eval` e decidir o modelo.
-- [ ] Message flows entre pools (interno ↔ externo) no layout de raias.
+A visao completa (API Python, servico BPMN separado, fila, banco vetorial, infra
+GCP) esta em `docs/architecture.md`; o que vem a seguir, em
+`docs/proximos-passos-amanha.md`.

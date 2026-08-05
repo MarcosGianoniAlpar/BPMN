@@ -2,6 +2,7 @@
   "extends": "bpmnlint:recommended",
   "rules": {
     "label-required": "warn",
+    "no-inclusive-gateway": "off",
     "start-event-required": "error",
     "end-event-required": "error"
   }

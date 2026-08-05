@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://alpar.local/schemas/process-spec.schema.json",
   "title": "ProcessSpec",
-  "description": "Modelo intermediario entre a LLM e a geracao de BPMN. A LLM produz este objeto; o compilador deterministico o transforma em BPMN 2.0. Escopo Fase 1 (MVP).",
+  "description": "Modelo intermediario entre a LLM e a geracao de BPMN. A LLM produz este objeto; o compilador deterministico o transforma em BPMN 2.0.",
   "type": "object",
   "additionalProperties": false,
   "required": ["process", "nodes", "flows"],
@@ -19,101 +19,29 @@
     },
     "participants": {
       "type": "array",
-      "description": "Organizacoes envolvidas. Na Fase 1, organizacoes externas viram pool caixa-preta.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "name", "type"],
-        "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "name": { "type": "string", "minLength": 1 },
-          "type": { "type": "string", "enum": ["internal", "external"] }
-        }
-      }
+      "description": "Organizacoes envolvidas. Organizacoes externas viram pool caixa-preta.",
+      "items": { "$ref": "#/$defs/participant" }
     },
     "lanes": {
       "type": "array",
       "description": "Raias (departamentos/papeis) dentro de um participante.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "name"],
-        "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "name": { "type": "string", "minLength": 1 },
-          "participant_id": { "$ref": "#/$defs/id" }
-        }
-      }
+      "items": { "$ref": "#/$defs/lane" }
     },
     "nodes": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "type", "name"],
-        "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "type": {
-            "type": "string",
-            "description": "Tipos suportados na Fase 1.",
-            "enum": [
-              "start_event",
-              "end_event",
-              "user_task",
-              "service_task",
-              "exclusive_gateway"
-            ]
-          },
-          "name": { "type": "string" },
-          "lane_id": { "$ref": "#/$defs/id" },
-          "evidence": {
-            "type": "array",
-            "description": "De onde no documento este no foi extraido. Obrigatorio para nos gerados pela IA.",
-            "items": { "$ref": "#/$defs/evidence" }
-          },
-          "confidence": { "$ref": "#/$defs/confidence" }
-        }
-      }
+      "description": "TODOS os nos do processo. Todo id que aparecer em flows.source ou flows.target tem de estar declarado aqui — inclusive os gateways intermediarios que voce criar para encadear duas perguntas ('precisa do Financeiro?' -> 'precisa do CFO?'), que sao os mais esquecidos.",
+      "items": { "$ref": "#/$defs/processNode" }
     },
     "flows": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "source", "target"],
-        "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "source": { "$ref": "#/$defs/id" },
-          "target": { "$ref": "#/$defs/id" },
-          "name": {
-            "type": "string",
-            "description": "Rotulo do fluxo, ex.: 'Sim' / 'Nao' na saida de um gateway."
-          },
-          "condition": {
-            "type": "string",
-            "description": "Condicao textual. Obrigatoria em saidas de exclusive_gateway."
-          }
-        }
-      }
+      "description": "Setas entre os nos. ANTES DE EMITIR, confira flows contra nodes: todo source e todo target tem de ser o id de um no declarado em nodes. Fluxo que aponta para no nao declarado e descartado, e quando ele era a ponte para o resto do processo, todo o trecho a jusante desaparece do desenho.",
+      "items": { "$ref": "#/$defs/flow" }
     },
     "unresolved_questions": {
       "type": "array",
       "description": "Ambiguidades que o documento nao resolveu. A IA nunca deve inventar o fluxo; deve perguntar.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "question"],
-        "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "question": { "type": "string", "minLength": 1 },
-          "reason": { "type": "string" },
-          "affected_nodes": {
-            "type": "array",
-            "items": { "$ref": "#/$defs/id" }
-          }
-        }
-      }
+      "items": { "$ref": "#/$defs/unresolvedQuestion" }
     }
   },
   "$defs": {
@@ -140,6 +68,99 @@
         "chunk_id": {
           "type": "string",
           "description": "Reservado para a Fase 2 (chunking). Na Fase 1 pode ficar ausente."
+        }
+      }
+    },
+    "nodeType": {
+      "type": "string",
+      "description": "Gateways: exclusive = caminhos alternativos (so UM segue); parallel = caminhos simultaneos (TODOS seguem, saidas sem condicao); inclusive = cada saida tem sua condicao e seguem TODAS as que forem verdadeiras (uma, varias ou todas) — use quando o numero de ramos ativos varia por caso; event_based = a decisao nao e do processo, e de quem responder PRIMEIRO (corrida entre esperas; os ramos perdedores sao cancelados). Eventos intermediarios: timer_event = espera por tempo; message_event = espera por mensagem/resposta externa.",
+      "enum": [
+        "start_event",
+        "end_event",
+        "user_task",
+        "service_task",
+        "exclusive_gateway",
+        "parallel_gateway",
+        "inclusive_gateway",
+        "event_based_gateway",
+        "timer_event",
+        "message_event"
+      ]
+    },
+    "processNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "$ref": "#/$defs/nodeType" },
+        "name": {
+          "type": "string",
+          "description": "Rotulo curto que aparece DENTRO da caixa no diagrama, escrito no idioma do documento. Comece SEMPRE com o verbo na forma de dicionario, sem sujeito e sem tempo conjugado (PT 'Confirmar', EN 'Confirm'), e mantenha ate ~30 caracteres: verbo + objeto, sem artigos, subordinadas ou nomes de pessoas. Ex.: 'Confirmar template do clone', nao 'Confirmar com Henrique se o clone seguiu o template solicitado'. Excecoes: start_event/end_event usam substantivo (descrevem um estado) e gateways de decisao usam pergunta curta terminada em '?'. O contexto completo vai em `detail`, nao aqui."
+        },
+        "detail": {
+          "type": "string",
+          "description": "A frase completa do que acontece nesta etapa: quem executa, sobre o que, com quais condicoes e ressalvas. Uma a duas frases. E o que o especialista le no painel ao clicar na caixa, entao aqui NAO se economiza palavra — todo o contexto que nao coube em `name` vem para ca."
+        },
+        "lane_id": { "$ref": "#/$defs/id" },
+        "evidence": {
+          "type": "array",
+          "description": "De onde no documento este no foi extraido. Obrigatorio para nos gerados pela IA.",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Uma seta do processo. `source` e `target` sao ids de nos DECLARADOS em `nodes` — nunca de um no que voce so mencionou aqui.",
+      "required": ["id", "source", "target"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/id" },
+        "target": { "$ref": "#/$defs/id" },
+        "name": {
+          "type": "string",
+          "description": "Rotulo do fluxo, ex.: 'Sim' / 'Nao' na saida de um gateway."
+        },
+        "condition": {
+          "type": "string",
+          "description": "Condicao textual. Obrigatoria em saidas de exclusive_gateway e de inclusive_gateway (nos dois o caminho depende de uma condicao). NAO use em saidas de parallel_gateway nem de event_based_gateway: no paralelo tudo segue junto, e no event_based quem decide e o evento que ocorrer primeiro."
+        }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "enum": ["internal", "external"] }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "participant_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "unresolvedQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "question"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "question": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" },
+        "affected_nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
         }
       }
     }

@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Alpar · Documento → BPMN</title>
-    <link rel="icon" href="/alpar-colorido.png" type="image/png" />
-    <link rel="apple-touch-icon" href="/alpar-colorido.png" />
+    <link rel="icon" href="/brand/alpar-colorido.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/brand/alpar-colorido.png" />
     <link rel="stylesheet" href="/vendor/assets/diagram-js.css" />
     <link rel="stylesheet" href="/vendor/assets/bpmn-js.css" />
     <!-- Ícones da paleta/context-pad do modeler (font embutida, sem fetch externo) -->
@@ -15,7 +15,9 @@
   <body>
     <header class="topbar">
       <div class="brand">
-        <img class="logo" src="/alpar-colorido.png" alt="Alpar" />
+        <!-- Logo oficial (colorido = fundo claro). A variante negativa esta em
+             brand/alpar-branco.png, para quando houver fundo escuro. -->
+        <img class="logo" src="/brand/alpar-colorido.png" alt="Alpar" />
         <span class="brand-sep"></span>
         <div class="product">
           <h1>Documento → BPMN</h1>
@@ -23,6 +25,22 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <!-- Custo sempre a vista: a key da API e da empresa, entao o total gasto
+             fica no header em toda tela, nao escondido no historico. -->
+        <button
+          id="cost-badge"
+          class="cost-badge"
+          hidden
+          title="Custo estimado acumulado da API (preços de lista). Clique para ver o detalhe por modelo."
+        >
+          <span class="cost-k">IA</span>
+          <span class="cost-v" id="cost-badge-value">US$ 0.00</span>
+        </button>
+        <button id="history-btn" class="ghost history-btn" title="Processos salvos e uso da IA">
+          <span class="hamburger" aria-hidden="true"></span>
+          Histórico
+          <span id="history-count" class="pill" hidden></span>
+        </button>
         <button id="freeze-btn" class="ghost" hidden title="Salva o diagrama atual (com suas edições) como uma versão congelada">Congelar versão</button>
         <button id="dl-bpmn" class="ghost" hidden>Baixar .bpmn</button>
         <button id="dl-svg" class="ghost" hidden>Baixar SVG</button>
@@ -32,31 +50,82 @@
     </header>
 
     <main>
-      <!-- Estado inicial: upload -->
-      <section id="dropzone" class="dropzone">
-        <div class="drop-inner">
-          <div class="drop-icon">⤒</div>
-          <p class="drop-title">Arraste uma ata aqui</p>
-          <p class="drop-sub">ou</p>
-          <label class="file-btn">
-            Escolher arquivo
-            <input id="file-input" type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden />
-          </label>
-          <p class="drop-hint">Formatos: .txt, .md, .pdf, .docx</p>
+      <!-- Estado inicial: duas portas de entrada, cada uma com seu upload -->
+      <section id="home" class="home">
+        <div class="entry-cards">
+          <div class="entry-card" data-mode="doc">
+            <div class="entry-icon">⤒</div>
+            <h2>Ata ou documento</h2>
+            <p class="entry-desc">
+              O documento já está organizado. Extrai o processo e gera o
+              <strong>diagrama BPMN</strong>.
+            </p>
+            <label class="file-btn">
+              Escolher arquivo
+              <input class="entry-input" type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden />
+            </label>
+            <p class="entry-hint">ou arraste aqui · .txt .md .pdf .docx</p>
+            <p class="entry-cost">1 chamada de IA</p>
+          </div>
+
+          <div class="entry-card" data-mode="transcript">
+            <div class="entry-icon">🎙</div>
+            <h2>Transcrição de reunião</h2>
+            <p class="entry-desc">
+              Fala solta, ruído, “Speaker 1”. Vira uma <strong>ata estruturada</strong>
+              para revisar, baixar e arquivar.
+            </p>
+            <label class="file-btn">
+              Escolher arquivo
+              <input class="entry-input" type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden />
+            </label>
+            <p class="entry-hint">ou arraste aqui · .txt .md .pdf .docx</p>
+            <p class="entry-cost">1 chamada de IA · diagrama depois, se quiser</p>
+          </div>
         </div>
       </section>
 
-      <!-- Processos salvos (aparece na home quando ha projetos) -->
-      <section id="projects-panel" class="projects-panel" hidden>
-        <h2>Processos salvos</h2>
-        <ul id="projects-list"></ul>
-      </section>
+      <!-- Modo transcrição, passo intermediário: a ata estruturada -->
+      <section id="minutes-view" class="minutes-view" hidden>
+        <div class="minutes-head">
+          <div>
+            <h2 id="minutes-title">Ata estruturada</h2>
+            <p class="minutes-hint">
+              Pronta para revisar e arquivar. Corrija o texto à vontade — o que
+              estiver aqui é o que vai para o arquivo baixado.
+            </p>
+          </div>
+          <div class="minutes-actions">
+            <span id="minutes-usage" class="minutes-usage"></span>
+            <span id="minutes-saved" class="minutes-saved" hidden></span>
+            <button id="minutes-save" class="ghost" hidden title="Grava o texto revisado no banco">
+              Salvar alterações
+            </button>
+            <button id="minutes-download" class="apply-btn">Baixar ata (.md)</button>
+          </div>
+        </div>
 
-      <!-- Uso & custo (aparece na home quando ja houve gerações) -->
-      <section id="usage-panel" class="usage-panel" hidden>
-        <h2>Uso &amp; custo <span class="usage-hint">(estimativa por preços de lista)</span></h2>
-        <div class="usage-totals" id="usage-totals"></div>
-        <table class="usage-table" id="usage-table"></table>
+        <div class="minutes-body">
+          <textarea id="minutes-md" class="minutes-md" spellcheck="false"></textarea>
+          <aside class="minutes-side">
+            <div class="minutes-card" id="minutes-flow"></div>
+
+            <!-- Passo opcional: a ata já é a entrega; o diagrama é um extra. -->
+            <div class="minutes-card minutes-offer">
+              <h3>Quer o diagrama também?</h3>
+              <p class="card-hint">
+                A seção <strong>“Fluxo do processo acordado”</strong> desta ata pode
+                virar um BPMN. Roda o pipeline normal sobre o texto que está aí ao
+                lado — inclusive com as suas correções.
+              </p>
+              <button id="minutes-generate" class="ghost">Gerar diagrama desta ata</button>
+              <p class="card-cost">custa mais 1 chamada de IA</p>
+            </div>
+
+            <div class="minutes-card" id="minutes-summary"></div>
+            <div class="minutes-card" id="minutes-open"></div>
+          </aside>
+        </div>
       </section>
 
       <!-- Estado com resultado -->
@@ -115,11 +184,58 @@
       </section>
     </main>
 
+    <!-- Histórico: gaveta sobreposta, aberta pelo botão da topbar. Fica FORA do
+         <main> de propósito — assim não disputa largura com a home nem com o
+         workspace, que era o que espremia os cards de entrada. -->
+    <aside id="history" class="history" aria-label="Histórico" aria-hidden="true">
+      <div class="history-head">
+        <h2>Histórico</h2>
+        <button id="history-close" class="icon-btn" title="Fechar (Esc)">✕</button>
+      </div>
+      <div class="history-body">
+        <!-- Falha de banco NÃO pode parecer "nada salvo ainda": quando alguma
+             consulta quebra, a gaveta diz qual e por quê. -->
+        <p id="history-error" class="history-error" hidden></p>
+
+        <section class="history-section">
+          <h3>Atas salvas</h3>
+          <ul id="minutes-list"></ul>
+          <p id="minutes-empty" class="history-empty">
+            Nenhuma ata salva ainda. As atas geradas a partir de transcrições
+            aparecem aqui.
+          </p>
+        </section>
+
+        <section class="history-section">
+          <h3>Processos salvos</h3>
+          <ul id="projects-list"></ul>
+          <p id="projects-empty" class="history-empty">
+            Nenhum processo salvo ainda. Os diagramas que você gerar aparecem aqui.
+          </p>
+        </section>
+
+        <section class="history-section" id="usage-section" hidden>
+          <h3>Uso &amp; custo <span class="usage-hint">(estimativa por preços de lista)</span></h3>
+          <div class="usage-totals" id="usage-totals"></div>
+          <table class="usage-table" id="usage-table"></table>
+        </section>
+      </div>
+    </aside>
+    <div id="history-backdrop" class="history-backdrop"></div>
+
     <!-- Overlay de carregamento com progresso por etapa -->
     <div id="loading" class="loading" hidden>
       <div class="progress-card">
-        <h3>Gerando o diagrama</h3>
+        <h3 id="loading-title">Gerando o diagrama</h3>
         <ol class="steps" id="steps">
+          <li data-stage="minutes" hidden>
+            <span class="dot"></span>
+            <span class="lbl">Estruturando a ata <em>(IA — pode levar até ~1 min)</em></span>
+            <span class="t"></span>
+          </li>
+          <li data-stage="render" hidden>
+            <span class="dot"></span><span class="lbl">Montando a ata em Markdown</span><span class="t"></span>
+          </li>
           <li data-stage="extract">
             <span class="dot"></span>
             <span class="lbl">Extraindo o processo <em>(IA — pode levar até ~1 min)</em></span>

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import type { ProcessSpec } from './types/process-spec.js';
+import type { MeetingMinutes } from './types/meeting-minutes.js';
 import type { LintResult } from './lintBpmn.js';
 import { estimateCost, priceLabel } from './pricing.js';
 
@@ -104,6 +105,50 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_versions_project
     ON versions(project_id, version_number);
+  -- Chamadas de IA que NAO viram uma versao de projeto: a transcricao -> ata do
+  -- modo transcricao, e QUALQUER chamada que falhou depois de queimar tokens
+  -- (max_tokens, por exemplo). Sem elas o painel de custo subestimaria o gasto —
+  -- e erraria justamente nos casos caros, que sao os que estouram o limite.
+  CREATE TABLE IF NOT EXISTS ai_calls (
+    id uuid PRIMARY KEY,
+    kind text NOT NULL,
+    model text NOT NULL,
+    input_tokens integer NOT NULL,
+    output_tokens integer NOT NULL,
+    source_filename text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE ai_calls ADD COLUMN IF NOT EXISTS failed boolean NOT NULL DEFAULT false;
+  -- Ata estruturada do modo transcricao. Ela e uma ENTREGA por si so (o
+  -- especialista revisa, baixa e arquiva), entao precisa sobreviver a aba: antes
+  -- desta tabela a ata existia so no textarea do navegador, e uma chamada de IA
+  -- JA PAGA se perdia num F5. Guarda tambem a transcricao de origem, como
+  -- 'projects' guarda o documento-fonte — sem ela nao da para reprocessar.
+  CREATE TABLE IF NOT EXISTS minutes (
+    id uuid PRIMARY KEY,
+    title text NOT NULL,
+    source_filename text,
+    transcript text NOT NULL,
+    minutes jsonb NOT NULL,
+    markdown text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  -- Procedencia: de qual ata este projeto nasceu (nulo quando veio de documento
+  -- pronto). Sem esta coluna, ata e diagrama ficam como duas listas soltas e o
+  -- banco nao sabe dizer que um veio do outro.
+  ALTER TABLE projects ADD COLUMN IF NOT EXISTS minutes_id uuid
+    REFERENCES minutes(id) ON DELETE SET NULL;
+  -- Contador de chamadas de IA por janela de tempo. Vive no BANCO porque em
+  -- serverless nao existe memoria compartilhada: cada invocacao da funcao e um
+  -- processo novo, e um contador em variavel zeraria a cada chamada.
+  -- scope e 'global' ou 'ip:<endereco>'; a PK composta faz o UPSERT ser atomico.
+  CREATE TABLE IF NOT EXISTS rate_limit (
+    scope text NOT NULL,
+    window_start timestamptz NOT NULL,
+    hits integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, window_start)
+  );
 `;
 
 let schemaReady: Promise<void> | undefined;
@@ -149,6 +194,8 @@ export async function createProjectWithVersion(input: {
   name: string;
   sourceFilename?: string | null;
   sourceText: string;
+  /** Ata de origem, quando o diagrama nasceu do modo transcricao. */
+  minutesId?: string | null;
   first: NewVersionInput;
 }): Promise<{ projectId: string; versionId: string; versionNumber: number }> {
   const sql = await db();
@@ -156,8 +203,11 @@ export async function createProjectWithVersion(input: {
 
   return sql.begin(async (tx) => {
     await tx`
-      INSERT INTO projects (id, name, source_filename, source_text)
-      VALUES (${projectId}, ${input.name}, ${input.sourceFilename ?? null}, ${input.sourceText})
+      INSERT INTO projects (id, name, source_filename, source_text, minutes_id)
+      VALUES (
+        ${projectId}, ${input.name}, ${input.sourceFilename ?? null},
+        ${input.sourceText}, ${input.minutesId ?? null}
+      )
     `;
     const { versionId, versionNumber } = await insertVersion(tx, projectId, input.first);
     return { projectId, versionId, versionNumber };
@@ -327,6 +377,227 @@ export async function deleteProject(projectId: string): Promise<boolean> {
   return result.count > 0;
 }
 
+// ---- Atas (modo transcricao) ----
+
+export interface MinutesSummary {
+  id: string;
+  title: string;
+  sourceFilename: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Etapas do fluxo detectado — indica se a ata tem material para virar diagrama. */
+  stepCount: number;
+  /** Quantos diagramas ja nasceram desta ata. */
+  projectCount: number;
+}
+
+export interface MinutesRecord extends MinutesSummary {
+  minutes: MeetingMinutes;
+  markdown: string;
+  transcript: string;
+}
+
+/** Salva a ata recem-gerada. Devolve o id para o cliente reabrir/editar depois. */
+export async function saveMinutes(input: {
+  title: string;
+  sourceFilename?: string | null;
+  transcript: string;
+  minutes: MeetingMinutes;
+  markdown: string;
+}): Promise<{ minutesId: string }> {
+  const sql = await db();
+  const minutesId = randomUUID();
+  const json = input.minutes as unknown as postgres.JSONValue;
+  await sql`
+    INSERT INTO minutes (id, title, source_filename, transcript, minutes, markdown)
+    VALUES (
+      ${minutesId}, ${input.title}, ${input.sourceFilename ?? null},
+      ${input.transcript}, ${sql.json(json)}, ${input.markdown}
+    )
+  `;
+  return { minutesId };
+}
+
+export async function listMinutes(): Promise<MinutesSummary[]> {
+  const sql = await db();
+  const rows = await sql`
+    SELECT m.id, m.title, m.source_filename, m.created_at, m.updated_at,
+           COALESCE(jsonb_array_length(m.minutes #> '{process_flow,steps}'), 0)::int AS step_count,
+           COUNT(p.id)::int AS project_count
+    FROM minutes m
+    LEFT JOIN projects p ON p.minutes_id = m.id
+    GROUP BY m.id
+    ORDER BY m.updated_at DESC
+  `;
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    sourceFilename: r.source_filename,
+    createdAt: toIso(r.created_at),
+    updatedAt: toIso(r.updated_at),
+    stepCount: Number(r.step_count),
+    projectCount: Number(r.project_count),
+  }));
+}
+
+export async function getMinutesDoc(id: string): Promise<MinutesRecord | undefined> {
+  const sql = await db();
+  const [r] = await sql`
+    SELECT m.id, m.title, m.source_filename, m.transcript, m.minutes, m.markdown,
+           m.created_at, m.updated_at,
+           COALESCE(jsonb_array_length(m.minutes #> '{process_flow,steps}'), 0)::int AS step_count,
+           (SELECT COUNT(*)::int FROM projects p WHERE p.minutes_id = m.id) AS project_count
+    FROM minutes m WHERE m.id = ${id}
+  `;
+  if (!r) return undefined;
+  return {
+    id: r.id,
+    title: r.title,
+    sourceFilename: r.source_filename,
+    createdAt: toIso(r.created_at),
+    updatedAt: toIso(r.updated_at),
+    stepCount: Number(r.step_count),
+    projectCount: Number(r.project_count),
+    minutes: r.minutes as MeetingMinutes,
+    markdown: r.markdown,
+    transcript: r.transcript,
+  };
+}
+
+/**
+ * Grava as correcoes do especialista no texto da ata. Só o Markdown muda: o JSON
+ * estruturado continua sendo o que a IA devolveu, e é o Markdown — o texto
+ * revisado — que vira o diagrama e o arquivo baixado.
+ */
+export async function updateMinutesMarkdown(
+  id: string,
+  markdown: string,
+): Promise<boolean> {
+  const sql = await db();
+  const result = await sql`
+    UPDATE minutes SET markdown = ${markdown}, updated_at = now() WHERE id = ${id}
+  `;
+  return result.count > 0;
+}
+
+export async function deleteMinutesDoc(id: string): Promise<boolean> {
+  const sql = await db();
+  const result = await sql`DELETE FROM minutes WHERE id = ${id}`;
+  return result.count > 0;
+}
+
+// ---- Limite de chamadas de IA ----
+
+export interface RateVerdict {
+  allowed: boolean;
+  /** Qual teto barrou (so quando `allowed` e false). */
+  scope?: 'ip' | 'global';
+  limit?: number;
+  hits?: number;
+  /** Segundos ate a janela virar, para o cabecalho Retry-After. */
+  retryAfterSeconds?: number;
+}
+
+const HOUR_S = 3600;
+const DAY_S = 86400;
+
+/** Soma 1 na janela atual do escopo e devolve o total ja contando esta chamada. */
+async function bump(
+  sql: Sql,
+  scope: string,
+  unidade: 'hour' | 'day',
+): Promise<{ hits: number; windowStart: Date }> {
+  const [row] = await sql<{ hits: number; window_start: Date }[]>`
+    INSERT INTO rate_limit (scope, window_start, hits)
+    VALUES (${scope}, date_trunc(${unidade}, now()), 1)
+    ON CONFLICT (scope, window_start) DO UPDATE SET hits = rate_limit.hits + 1
+    RETURNING hits, window_start
+  `;
+  return { hits: Number(row?.hits ?? 1), windowStart: new Date(row?.window_start ?? Date.now()) };
+}
+
+function faltamSegundos(windowStart: Date, duracao: number): number {
+  const fim = windowStart.getTime() + duracao * 1000;
+  return Math.max(1, Math.ceil((fim - Date.now()) / 1000));
+}
+
+/**
+ * Reserva uma chamada de IA para este visitante, ou nega se estourou o teto.
+ *
+ * Conta ANTES da chamada, de proposito: a IA cobra pelos tokens gerados mesmo
+ * quando o resultado e inutilizavel, entao reservar so depois do sucesso
+ * deixaria justamente as falhas (as caras) fora da conta.
+ *
+ * A ordem importa: o teto por IP e checado primeiro e so entao o global e
+ * incrementado. Se fosse o contrario, alguem martelando a rota com um IP ja
+ * bloqueado consumiria o teto do dia e derrubaria a app para todo mundo.
+ */
+export async function reserveAiCall(
+  ip: string,
+  limits: { perIpPerHour: number; globalPerDay: number },
+): Promise<RateVerdict> {
+  const sql = await db();
+
+  if (limits.perIpPerHour > 0) {
+    const { hits, windowStart } = await bump(sql, `ip:${ip}`, 'hour');
+    if (hits > limits.perIpPerHour) {
+      return {
+        allowed: false,
+        scope: 'ip',
+        limit: limits.perIpPerHour,
+        hits,
+        retryAfterSeconds: faltamSegundos(windowStart, HOUR_S),
+      };
+    }
+  }
+
+  if (limits.globalPerDay > 0) {
+    const { hits, windowStart } = await bump(sql, 'global', 'day');
+    if (hits > limits.globalPerDay) {
+      return {
+        allowed: false,
+        scope: 'global',
+        limit: limits.globalPerDay,
+        hits,
+        retryAfterSeconds: faltamSegundos(windowStart, DAY_S),
+      };
+    }
+  }
+
+  // Janelas velhas nao servem para nada; a limpeza e uma linha e a tabela e
+  // minuscula perto do custo de uma chamada de IA.
+  await sql`DELETE FROM rate_limit WHERE window_start < now() - interval '2 days'`;
+
+  return { allowed: true };
+}
+
+/** Tipos de chamada de IA avulsa (sem versao associada). */
+export type AiCallKind = 'minutes' | 'generate' | 'refine';
+
+/**
+ * Registra uma chamada de IA que nao gera versao de projeto, para que ela
+ * apareca no relatorio de uso/custo. A key e da empresa: nenhuma chamada pode
+ * ficar fora da conta — inclusive as que FALHARAM depois de gastar tokens
+ * (`failed: true`), que sao cobradas do mesmo jeito.
+ */
+export async function recordAiCall(input: {
+  kind: AiCallKind;
+  model: string;
+  usage: { inputTokens: number; outputTokens: number };
+  sourceFilename?: string | null;
+  failed?: boolean;
+}): Promise<void> {
+  const sql = await db();
+  await sql`
+    INSERT INTO ai_calls (id, kind, model, input_tokens, output_tokens, source_filename, failed)
+    VALUES (
+      ${randomUUID()}, ${input.kind}, ${input.model},
+      ${input.usage.inputTokens}, ${input.usage.outputTokens},
+      ${input.sourceFilename ?? null}, ${input.failed ?? false}
+    )
+  `;
+}
+
 export interface UsagePerModel {
   model: string;
   label: string;
@@ -348,19 +619,26 @@ export interface UsageReport {
 }
 
 /**
- * Relatorio de uso/custo: agrega tokens por modelo em todas as versoes geradas
- * por IA (as 'frozen' nao tem tokens) e estima o custo em USD. Custo e
- * ESTIMATIVA baseada em precos de lista (ver pricing.ts).
+ * Relatorio de uso/custo: agrega tokens por modelo em TODAS as chamadas de IA —
+ * as versoes geradas/revisadas (as 'frozen' nao tem tokens) mais as chamadas
+ * avulsas de `ai_calls` (ex.: transcricao -> ata). Custo e ESTIMATIVA baseada em
+ * precos de lista (ver pricing.ts).
  */
 export async function getUsageReport(): Promise<UsageReport> {
   const sql = await db();
   const rows = await sql`
+    WITH todas AS (
+      SELECT model, input_tokens, output_tokens
+      FROM versions
+      WHERE input_tokens IS NOT NULL AND model IS NOT NULL
+      UNION ALL
+      SELECT model, input_tokens, output_tokens FROM ai_calls
+    )
     SELECT model,
-           COUNT(*)::int                     AS calls,
+           COUNT(*)::int                           AS calls,
            COALESCE(SUM(input_tokens), 0)::bigint  AS input_tokens,
            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
-    FROM versions
-    WHERE input_tokens IS NOT NULL AND model IS NOT NULL
+    FROM todas
     GROUP BY model
   `;
 

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { loadConfig } from '../dist/config.js';
-import { sendJson, runRefine } from '../dist/httpHandlers.js';
+import { rejectRequest, runRefine, clientIp } from '../dist/httpHandlers.js';
 
 // A revisao (IA) leva ~1 min. Exige plano Vercel Pro (Hobby capa em 60s).
 export const maxDuration = 300;
@@ -22,7 +22,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const spec = payload.spec;
   const answers = Array.isArray(payload.answers) ? payload.answers : [];
   if (!text || !spec || answers.length === 0) {
-    sendJson(res, 400, { error: 'Faltam texto, ProcessSpec ou respostas.' });
+    rejectRequest(res, 'POST', '/api/refine', 400, 'Faltam texto, ProcessSpec ou respostas.');
     return;
   }
   await runRefine(res, config, {
@@ -31,5 +31,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     projectId: typeof payload.projectId === 'string' ? payload.projectId : undefined,
     spec,
     answers,
+    ip: clientIp(req.headers, req.socket?.remoteAddress),
   });
 }

@@ -21,6 +21,9 @@ output/*
 # Banco de dados local (persistencia de projetos/versoes)
 data/
 
+# Dumps do banco (npm run backup) — contem dados de processos da empresa
+backups/
+
 # Relatorios de avaliacao gerados
 evaluations/reports/
 

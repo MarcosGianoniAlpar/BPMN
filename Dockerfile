@@ -1,40 +1,52 @@
 # syntax=docker/dockerfile:1
 
-# --- Estágio de build: compila o TypeScript ---
-# Node 24: precisa de >= 22.5 para o módulo nativo node:sqlite (persistência).
+# Imagem para AUTO-HOSPEDAGEM (VM, servidor da empresa, docker-compose).
+# O deploy em uso hoje e o Vercel — estatico + funcoes serverless, que nao usa
+# este arquivo. Ele existe como saida caso o Vercel deixe de servir: aqui roda o
+# servidor Node inteiro (src/server.ts), sem o teto de 60s por requisicao.
+#
+# O estado NAO vive no container: projetos, versoes e contador de uso ficam no
+# Postgres (DATABASE_URL). Backup e `npm run backup`, nao copiar volume.
+
+# --- Estagio de build: compila o TypeScript e junta os assets do bpmn-js ---
+# Node 24: o package.json exige >= 22.5.
 FROM node:24-bookworm AS build
 WORKDIR /app
 
-# Instala TODAS as dependências (inclui dev, para o tsc).
+# Instala TODAS as dependencias (inclui dev, para o tsc).
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copia o código e compila para dist/.
+# Copia o codigo e compila para dist/.
 COPY tsconfig.json ./
 COPY src ./src
 COPY schemas ./schemas
-RUN npm run build
+COPY scripts ./scripts
+COPY public ./public
+# copy:vendor traz o bpmn-js de node_modules para public/vendor. Sem este passo o
+# frontend carrega sem o Modeler e o diagrama simplesmente nao renderiza.
+RUN npm run copy:vendor && npm run build
 
-# --- Estágio de runtime: só o necessário para rodar ---
+# --- Estagio de runtime: so o necessario para rodar ---
 FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Só as dependências de produção.
+# So as dependencias de producao.
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-# Artefatos compilados + assets que o servidor lê em runtime.
+# Artefatos compilados + assets que o servidor le em runtime.
 COPY --from=build /app/dist ./dist
-COPY public ./public
+COPY --from=build /app/public ./public
 COPY prompts ./prompts
 COPY schemas ./schemas
 COPY .bpmnlintrc ./.bpmnlintrc
 
-# O banco SQLite vive aqui; monte um volume para persistir entre restarts.
-RUN mkdir -p /app/data
-VOLUME ["/app/data"]
+# O servidor nao escreve em disco (o estado vai para o Postgres), entao nao ha
+# volume a montar e da para rodar sem privilegio.
+USER node
 
 EXPOSE 3000
 

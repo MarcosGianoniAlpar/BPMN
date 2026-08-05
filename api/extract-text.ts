@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { isSupportedFilename } from '../dist/documentLoader.js';
-import { sendJson, decodeFilename, runExtractText } from '../dist/httpHandlers.js';
+import { rejectRequest, decodeFilename, runExtractText } from '../dist/httpHandlers.js';
 
 // Parsing de PDF/DOCX grande pode demorar; folga sobre o default.
 export const maxDuration = 60;
@@ -14,7 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const rawName = req.headers['x-filename'];
   const filename = decodeFilename((Array.isArray(rawName) ? rawName[0] : rawName) ?? '');
   if (!filename || !isSupportedFilename(filename)) {
-    sendJson(res, 400, { error: 'Nome de arquivo ausente ou tipo nao suportado.' });
+    rejectRequest(res, 'POST', '/api/extract-text', 400, 'Nome de arquivo ausente ou tipo nao suportado.');
     return;
   }
 
@@ -26,7 +26,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       ? Buffer.from(body)
       : null;
   if (!buffer) {
-    sendJson(res, 400, { error: 'Upload invalido (esperado bytes do arquivo).' });
+    rejectRequest(res, 'POST', '/api/extract-text', 400, 'Upload invalido (esperado bytes do arquivo).');
     return;
   }
 
