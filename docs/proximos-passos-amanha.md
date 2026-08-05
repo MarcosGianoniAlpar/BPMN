@@ -336,10 +336,10 @@ vem antes do que melhora *um caso*.
 | ~~—~~ | ~~Task A · repo privado~~ | — | **Descartada em 2026-08-05:** decisão do dono é manter público ("preciso que o povo veja") |
 | ~~4~~ | ~~SDK 0.68 → 0.115 + `AI_EFFORT`~~ | — | **✅ 2026-08-05**, sem uma quebra |
 | **1** | **Olhar** os `.bpmn` do L1/L2 | ~15min, sem API | **Meio caminho andado:** `npm run fixtures:bpmn` já gravou os 6 diagramas em `output/fixtures/` e lintou. Falta o olho — arrastar `faixa-de-valor.bpmn` e `ponte-cortada.bpmn` no app, porque rótulo sobreposto o lint não pega |
-| **2** | **Task N · `strict: true` no tool use** | ~1h + 1 geração | **Novo, e pode aposentar o `normalizarColecoes`.** Ver abaixo |
-| **3** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
-| **4** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
-| **5** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
+| ~~2~~ | ~~Task N · `strict: true`~~ | — | **✅ código feito em 2026-08-05.** Falta só a rodada real confirmar |
+| **2** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
+| **3** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
+| **4** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
 | 6 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
 | 7 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
 
@@ -552,49 +552,63 @@ instalado na máquina (o script detecta e diz como instalar).
 enforçado. Rodar `npm run format` **num commit isolado** (o diff é grande e
 ruidoso) e só então adicionar `format:check` ao CI.
 
-### Task N — `strict: true` no tool use  ·  ~1h + 1 geração para confirmar
+### Task N — `strict: true` no tool use  ·  **✅ código feito em 2026-08-05; falta 1 geração para confirmar**
 
-**Achado ao consultar a referência da API para o upgrade do SDK, não procurando por
-isso.** Existe `strict: true` como campo de raiz da definição da ferramenta (não do
-`tool_choice`), **GA, sem beta header**, e o Sonnet 5 está na lista de suportados.
-O que ele garante: **`tool_use.input` valida exatamente contra o `input_schema`.**
+**O que é:** `strict: true` como campo de raiz da definição da ferramenta (não do
+`tool_choice`), **GA, sem beta header**, e o Sonnet 5 suporta. A API compila o
+`input_schema` numa gramática e **restringe a amostragem do modelo aos tokens
+válidos** — não é validação depois do fato, é impossibilidade na geração.
 
-**Por que isso importa aqui mais que em qualquer outro projeto:** é exatamente a
-classe de falha que o `normalizarColecoes` existe para remendar — `nodes` vindo
-como string de JSON, como mapa por id, agrupado por processo, ou cortado no meio.
-Foram ~US$ 0,57 em gerações perdidas por essa família de defeitos, e o remendo
-atual conserta *as formas erradas conhecidas*. Com `strict`, elas deixam de ser
-possíveis. O `normalizarColecoes` não sai no mesmo commit — vira rede de segurança
-até uma rodada real confirmar.
+**Por que importa aqui mais que em qualquer outro projeto:** o tool use forçado já
+garantia que vinha um **objeto**; não garantia a **forma** dele. E era exatamente
+ali que doía — `nodes` chegando como string de JSON, como mapa por id, agrupado por
+processo. Foram ~US$ 0,57 nessa família de defeitos, e o `normalizarColecoes`
+conserta *as formas erradas conhecidas*. Com `strict` elas deixam de existir.
 
-**O trabalho real não é o `strict: true`, é o schema.** A saída estruturada
-**não aceita** vários keywords que o nosso schema usa:
+**O que foi feito** (`src/toolSchema.ts`, os dois arquivos de ferramenta, 6 testes):
+a poda dos keywords que a saída estruturada recusa — `minLength` (4×) e o
+`minimum: 1` de `evidence.page` — e `strict: true` nas duas ferramentas. O schema
+da ata passou a ir por `inlineSchemaRefs()` também: ele não tem `$ref`, mas assim a
+poda vale para ele sem depender de alguém lembrar da regra ao editar.
+Os **arquivos** de schema continuam com os keywords: quem os usa é o Ajv. A
+garantia não se perde, só muda quem a aplica.
 
-| keyword | onde está hoje | o que fazer |
-|---|---|---|
-| `minLength` | `process.name` e outros | tirar **só** da versão que vai para a ferramenta |
-| `minItems` | `nodes` | idem |
-| `pattern` | `$defs.id` | **não está na lista de suportados** — conferir antes |
+**Quatro coisas que a leitura da doc corrigiu do que estava escrito aqui antes:**
 
-O lugar certo para isso já existe: **`src/toolSchema.ts`**, que hoje achata os
-`$ref` e remove `$defs`/`$schema`/`$id` justamente porque *"quem recebe a versão
-achatada é só a API"*. O Ajv continua lendo o arquivo com os keywords intactos, e
-`npm run gen:types` também — nada de tipo muda.
+| eu tinha escrito | a doc diz |
+|---|---|
+| `pattern` "não está na lista de suportados" | **É suportado**, tem seção própria. `^[A-Za-z_][A-Za-z0-9_]*$` usa só `^...$`, classes e `*`. **Ficou.** |
+| `minItems` sai | o proibido é *"array constraints **beyond** `minItems` of 0 or 1"*. **`minItems: 1` ficou.** Um `minItems: 2` no futuro quebraria — e há teste avisando |
+| `strict` + `tool_choice` forçado: incerto, "pode matar a task" | é a combinação **recomendada**: *"Combine `tool_choice` with strict tool use to guarantee both that one of your tools will be called AND that the tool inputs strictly follow your schema"* |
+| — (não tinha visto) | `evidence.page` tem `minimum: 1`, constraint numérico. **Saiu.** |
 
-**Duas incertezas a resolver antes de gastar, ambas de leitura, não de teste:**
-1. **`strict` + `tool_choice` forçado.** A referência lista incompatibilidades de
-   `strict` numa frase que fala de *programmatic tool calling*; a leitura natural é
-   que a restrição é da PTC, não do `strict`. Mas nós usamos `tool_choice` forçado
-   nas três chamadas — confirmar na doc antes, porque se forem incompatíveis a task
-   morre aqui.
-2. **`pattern` é suportado?** Se não, o `^[A-Za-z_][A-Za-z0-9_]*$` sai do schema da
-   ferramenta e a garantia de id válido passa a ser só do Ajv — que já é onde ela
-   é fatal hoje (`SCHEMA`), então não se perde nada.
+Também confirmado, e vale guardar: propriedade **opcional é permitida** (`required`
+parcial — os exemplos da doc são assim), então os campos opcionais do ProcessSpec
+(`detail`, `lane_id`, `evidence`, `confidence`) não viraram obrigatórios.
 
-**Como validar sem gastar:** o schema achatado é testável (`test/extractProcessSpec.test.ts`
-já inspeciona o `input_schema`) — dá para fixar que os keywords proibidos
-desapareceram e que `additionalProperties: false` + `required` estão em todo objeto,
-que é o que o `strict` exige. Só a garantia em si precisa de 1 geração.
+**Achado adjacente que fecha uma dúvida antiga do projeto:** o que era incompatível
+com `tool_choice` forçado é o `thinking: {type: "enabled"}` — o modo **manual**,
+removido no Sonnet 5. O `adaptive` **suporta** tool use forçado, textualmente. Ou
+seja, `AI_THINKING=adaptive` é seguro aqui, e não só "provavelmente".
+
+**O que falta, e por que é 1 geração e não zero:** a garantia é do servidor. O
+código está coberto por 6 testes que afirmam o contrato inteiro do `strict` nos
+**dois** schemas — nenhum keyword proibido, `additionalProperties: false` +
+`required` em todo objeto, e o contrapeso (que a poda não levou o `pattern`, o
+`minItems: 1`, o `enum`, nem o **campo** `page` junto com o keyword). Isso torna um
+400 improvável, não impossível.
+**O risco é baixo de propósito:** um 400 por schema inválido é recusado **antes da
+inferência**, então não cobra tokens — o custo de estar errado é um erro imediato e
+claro, não uma geração queimada.
+
+**Duas notas operacionais da doc:** o schema compilado fica em cache por **24h**
+desde o último uso, então a primeira chamada com um schema novo paga uma compilação;
+e schemas são cacheados **separadamente** do conteúdo das mensagens — nada de dado
+sensível em nome de propriedade, `enum`, `const` ou `pattern` (não é o nosso caso,
+mas vale saber antes de alguém pôr um `enum` com nomes de cliente).
+
+**Quando confirmar:** o `normalizarColecoes` fica como rede. Se ele parar de
+disparar nas próximas rodadas, aí sim vira código morto e sai.
 
 ### ~~Task L — Dois bugs de layout~~  ·  **✅ os dois feitos em 2026-08-05**
 

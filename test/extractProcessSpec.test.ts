@@ -2,6 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import type Anthropic from '@anthropic-ai/sdk';
 import { readSpecFromMessage, PROCESS_SPEC_TOOL } from '../src/extractProcessSpec.js';
+import { MEETING_MINUTES_TOOL } from '../src/transcriptToMinutes.js';
+import { inlineSchemaRefs } from '../src/toolSchema.js';
 import { AiCallError } from '../src/aiError.js';
 
 /**
@@ -26,6 +28,150 @@ function mensagemComToolUse(input: unknown, stopReason = 'tool_use'): Anthropic.
 
 const NO = { id: 'inicio', type: 'start_event', name: 'Pedido recebido' };
 const FLUXO = { id: 'f1', source: 'inicio', target: 'fim' };
+
+/**
+ * Contrato do `strict: true`, varrido nos DOIS schemas de ferramenta.
+ *
+ * Por que isto e teste e nao confianca: um keyword nao suportado faz a API
+ * devolver 400 — e o 400 chega na primeira geracao real, que e sempre a que
+ * alguem esta olhando. O 400 em si nao cobra (a requisicao e recusada antes da
+ * inferencia), mas o susto e a rodada perdida sim. Estas asserçoes sao a
+ * diferenca entre "deve funcionar" e "nao ha keyword proibido em nenhum dos dois".
+ *
+ * A lista vem da referencia da API. `pattern`, `minItems: 1`, `enum`, `const`,
+ * `format` e `additionalProperties: false` NAO estao aqui porque sao aceitos.
+ */
+const KEYWORDS_PROIBIDOS = [
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+  'minLength',
+  'maxLength',
+  'maxItems',
+  'uniqueItems',
+] as const;
+
+/** Caminhos (`a.b.c`) onde aparece um keyword proibido, ignorando nomes de propriedade. */
+function keywordsProibidos(no: unknown, caminho = '$'): string[] {
+  if (Array.isArray(no)) {
+    return no.flatMap((item, i) => keywordsProibidos(item, `${caminho}[${i}]`));
+  }
+  if (!no || typeof no !== 'object') return [];
+
+  const achados: string[] = [];
+  for (const [chave, valor] of Object.entries(no as Record<string, unknown>)) {
+    if ((KEYWORDS_PROIBIDOS as readonly string[]).includes(chave)) {
+      achados.push(`${caminho}.${chave}`);
+      continue;
+    }
+    // Dentro de `properties` as chaves sao NOMES de campo, nao keywords: um campo
+    // chamado `maxLength` e legitimo e nao pode contar como violacao.
+    if (chave === 'properties' && valor && typeof valor === 'object') {
+      for (const [nome, sub] of Object.entries(valor as Record<string, unknown>)) {
+        achados.push(...keywordsProibidos(sub, `${caminho}.properties.${nome}`));
+      }
+      continue;
+    }
+    achados.push(...keywordsProibidos(valor, `${caminho}.${chave}`));
+  }
+  return achados;
+}
+
+/** Objetos do schema que nao cumprem o que o `strict` exige. */
+function objetosIncompletos(no: unknown, caminho = '$'): string[] {
+  if (Array.isArray(no)) {
+    return no.flatMap((item, i) => objetosIncompletos(item, `${caminho}[${i}]`));
+  }
+  if (!no || typeof no !== 'object') return [];
+  const obj = no as Record<string, unknown>;
+
+  const achados: string[] = [];
+  if (obj.type === 'object') {
+    if (obj.additionalProperties !== false) {
+      achados.push(`${caminho}: additionalProperties precisa ser false`);
+    }
+    if (!Array.isArray(obj.required)) {
+      achados.push(`${caminho}: falta o array required`);
+    }
+  }
+  for (const [chave, valor] of Object.entries(obj)) {
+    const proximo = chave === 'properties' ? caminho : `${caminho}.${chave}`;
+    achados.push(...objetosIncompletos(valor, proximo));
+  }
+  return achados;
+}
+
+describe('strict: true — o contrato dos dois schemas de ferramenta', () => {
+  const FERRAMENTAS = [
+    ['emit_process_spec', PROCESS_SPEC_TOOL],
+    ['emit_meeting_minutes', MEETING_MINUTES_TOOL],
+  ] as const;
+
+  test('as duas ferramentas declaram strict', () => {
+    for (const [nome, tool] of FERRAMENTAS) {
+      assert.equal((tool as { strict?: boolean }).strict, true, `${nome} sem strict`);
+    }
+  });
+
+  test('nenhum keyword proibido pela saida estruturada, em nenhum dos dois', () => {
+    // O que a poda em src/toolSchema.ts tirou: `minLength` (4x no ProcessSpec) e
+    // o `minimum: 1` de `evidence.page`. Os arquivos de schema CONTINUAM com eles
+    // — quem os usa e o Ajv, e a garantia nao se perde, so muda quem a aplica.
+    for (const [nome, tool] of FERRAMENTAS) {
+      assert.deepEqual(keywordsProibidos(tool.input_schema), [], `em ${nome}`);
+    }
+  });
+
+  test('todo objeto tem additionalProperties: false e required', () => {
+    for (const [nome, tool] of FERRAMENTAS) {
+      assert.deepEqual(objetosIncompletos(tool.input_schema), [], `em ${nome}`);
+    }
+  });
+
+  test('a poda NAO removeu o que a saida estruturada aceita', () => {
+    // O contrapeso do teste acima: uma poda larga demais passaria nele e
+    // silenciosamente jogaria fora garantias que a API aceita de bom grado.
+    const spec = JSON.stringify(PROCESS_SPEC_TOOL.input_schema);
+    assert.match(spec, /\^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$/, 'o `pattern` do id tem de ficar');
+    assert.match(spec, /"minItems":\s*1/, '`minItems: 1` e aceito e tem de ficar');
+    assert.match(spec, /"enum"/, '`enum` e aceito');
+  });
+
+  test('a poda tirou o KEYWORD, nao o CAMPO', () => {
+    // `evidence.page` tinha `minimum: 1`. O keyword sai; a propriedade fica, ou a
+    // ferramenta perderia a pagina da citacao — rastreabilidade, nao enfeite.
+    const schema = PROCESS_SPEC_TOOL.input_schema as Record<string, any>;
+    const evidencia = schema.properties.nodes.items.properties.evidence.items;
+    assert.ok(evidencia.properties.page, 'o campo `page` desapareceu junto com o `minimum`');
+    assert.equal(evidencia.properties.page.type, 'integer');
+    assert.equal(evidencia.properties.page.minimum, undefined, 'o `minimum` deveria ter saido');
+
+    // Mesma coisa com `minLength`: `process.name` continua exigido e do tipo certo.
+    const nome = schema.properties.process.properties.name;
+    assert.equal(nome.type, 'string');
+    assert.equal(nome.minLength, undefined);
+    assert.ok(schema.properties.process.required.includes('name'));
+  });
+
+  test('um campo chamado como keyword nao e podado', () => {
+    // Guarda da distincao que a poda precisa fazer: dentro de `properties` as
+    // chaves sao NOMES, nao keywords. Sem isso, um dia alguem adiciona um campo
+    // `maxLength` ao schema e ele desaparece da ferramenta sem aviso.
+    const podado = inlineSchemaRefs({
+      type: 'object',
+      additionalProperties: false,
+      required: ['maxLength'],
+      properties: {
+        maxLength: { type: 'integer', minimum: 1 },
+      },
+    }) as Record<string, any>;
+
+    assert.ok(podado.properties.maxLength, 'o CAMPO maxLength foi podado como keyword');
+    assert.equal(podado.properties.maxLength.minimum, undefined, 'o keyword minimum ficou');
+  });
+});
 
 describe('PROCESS_SPEC_TOOL — o que a definicao da ferramenta entrega ao modelo', () => {
   const schema = PROCESS_SPEC_TOOL.input_schema as Record<string, any>;

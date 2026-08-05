@@ -7,18 +7,21 @@ import type { MeetingMinutes } from './types/meeting-minutes.js';
 import { cleanText } from './textCleanup.js';
 import { AiCallError } from './aiError.js';
 import { validateMeetingMinutes } from './validate.js';
+import { inlineSchemaRefs } from './toolSchema.js';
 import { thinkingParam, outputConfigParam } from './aiThinking.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const promptPath = resolve(__dirname, '../prompts/transcript-to-minutes.md');
 const schemaPath = resolve(__dirname, '../schemas/meeting-minutes.schema.json');
 
-// ATENCAO: este schema e todo INLINE, sem um `$ref` sequer — e e por isso que
-// funciona. Se um dia alguem introduzir `$defs`/`$ref` aqui, passe por
-// `inlineSchemaRefs()` (src/toolSchema.ts) antes de mandar como input_schema:
-// com os itens atras de `$ref`, o modelo devolve a ferramenta preenchida com
-// marcadores de template em vez do conteudo.
-const minutesSchema = JSON.parse(readFileSync(schemaPath, 'utf-8')) as unknown;
+// Este schema e todo INLINE, sem um `$ref` sequer — e e por isso que sempre
+// funcionou. Mesmo assim ele passa por `inlineSchemaRefs()`, por duas razoes que
+// nao dependem de ninguem lembrar de uma regra ao editar o arquivo: se um dia
+// alguem introduzir `$defs`/`$ref`, o achatamento ja esta no caminho (sem ele o
+// modelo devolve a ferramenta preenchida com marcadores de template); e a funcao
+// tambem poda os keywords que a saida estruturada recusa, sem os quais o
+// `strict: true` abaixo devolveria 400.
+const minutesSchema = inlineSchemaRefs(JSON.parse(readFileSync(schemaPath, 'utf-8')));
 
 /**
  * Ferramenta que a IA chama para emitir a ata. Mesmo padrao da extracao do
@@ -33,6 +36,8 @@ export const MEETING_MINUTES_TOOL: Anthropic.Tool = {
     'exatamente uma vez, com a ata completa (meeting, participants, topics, ' +
     'decisions, action_items, process_flow e open_questions) conforme o schema, ' +
     'mantendo a evidencia (citacao literal da transcricao) por item.',
+  // Ver o `strict` de PROCESS_SPEC_TOOL em src/extractProcessSpec.ts.
+  strict: true,
   input_schema: minutesSchema as Anthropic.Tool.InputSchema,
 };
 

@@ -25,6 +25,25 @@ const processSpecSchema = inlineSchemaRefs(JSON.parse(readFileSync(schemaPath, '
  * ferramenta garante que a saida venha pelo canal estruturado de tool use — o SDK
  * entrega `tool_use.input` ja como OBJETO, eliminando o `JSON.parse` de texto livre
  * que quebrava com documentos baguncados (transcricoes, encoding ruim).
+ *
+ * `strict: true` e o passo seguinte, e ataca o defeito que sobrou depois disso.
+ * O canal estruturado garantia que vinha um OBJETO; nao garantia a FORMA dele — e
+ * era exatamente ali que doia: `nodes` chegando como string de JSON, como mapa por
+ * id, ou agrupado por processo. Com `strict`, a API compila este schema numa
+ * gramatica e restringe a amostragem do modelo aos tokens validos, o que torna
+ * essas formas impossiveis em vez de remendaveis.
+ *
+ * Duas coisas conferidas na referencia da API antes de ligar, porque as duas
+ * poderiam matar isto em silencio:
+ * - `strict` + `tool_choice` FORCADO e valido; a propria doc recomenda a
+ *   combinacao para garantir "que a ferramenta sera chamada E que a entrada segue
+ *   o schema". (Cuidado adjacente: `thinking: enabled` — o modo manual, removido
+ *   no Sonnet 5 — e que era incompativel com tool_choice forcado. `adaptive` nao.)
+ * - o schema precisa passar por `inlineSchemaRefs()`, que poda os keywords que a
+ *   saida estruturada recusa. Um deles aqui devolve 400.
+ *
+ * O `normalizarColecoes` NAO sai junto: fica como rede ate uma rodada real
+ * confirmar. Se ele parar de disparar, ai sim vira codigo morto.
  */
 export const PROCESS_SPEC_TOOL: Anthropic.Tool = {
   name: 'emit_process_spec',
@@ -32,6 +51,7 @@ export const PROCESS_SPEC_TOOL: Anthropic.Tool = {
     'Registra o ProcessSpec extraido do documento. Chame esta ferramenta exatamente ' +
     'uma vez, com o ProcessSpec completo (process, participants, lanes, nodes, flows e ' +
     'unresolved_questions) conforme o schema, mantendo a evidencia por elemento.',
+  strict: true,
   input_schema: processSpecSchema as Anthropic.Tool.InputSchema,
 };
 
