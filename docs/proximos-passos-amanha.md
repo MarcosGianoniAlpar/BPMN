@@ -340,8 +340,9 @@ vem antes do que melhora *um caso*.
 | **2** | **Ratificar a Task I** = `processes[]` no mesmo spec | decisão | Já é a recomendação escrita; falta o "sim". Trava K, F1 e F2 |
 | **3** | **Task K · chunking** | dias | O que faz documento gigante funcionar. Ler antes "a forma da K", abaixo |
 | **4** | **M2 · realimentar avisos no refino** | ~meio dia + 1 chamada | Conserta de verdade o que o M1 não evitar |
+| — | **Tasks O a R · executor e cores** | **bloqueadas** | Novas (2026-08-05). **Precisam do BPMN do cliente antes da primeira linha** — ver a seção delas. Uma vez com o arquivo em mão, provavelmente sobem muito nesta lista: são a convenção que o cliente já usa |
 | 6 | F3 (boundary events), F5 (multi-instância), F1/F7 | — | Depois do K, na ordem da Task F |
-| 7 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam |
+| 7 | Task G (vocabulário ServiceNow), H, B, C, D, E | — | Como já estavam. **A G e a B agora têm dono novo**: a G encosta na Task R (sistemas como raia) e a B na Task Q |
 
 **Por que o SDK subiu na lista.** Estava classificado como "otimização de custo,
 não corrige erro" — e isso era verdade **com uma chamada por documento**. A Task K
@@ -395,8 +396,14 @@ L1) e `ponte-cortada.bpmn` (o do L2) no app local ou no bpmn.io. Não gasta API.
 ## 📍 Onde paramos — 2026-08-05, fim do dia
 
 **Estado do git:** branch `dev`, árvore limpa, **tudo empurrado** para
-`origin/dev`. O `main` (PROD) continua parado em `b5e191b` — nada disso foi para
-produção, e ir precisa de aprovação explícita.
+`origin/dev`.
+
+**Correção do que estava escrito aqui antes:** eu havia registrado que o `main`
+estava em `b5e191b`. Errado. O `main` está em **`633d145`**, o merge do **PR #1,
+de 28/07** — nove dias atrás. Três commits que eu supunha já em PROD (`b5e191b`,
+`694dd21`, `2ac47e7`) também não estavam. Ou seja, o PR aberto em 2026-08-05
+leva **10 commits**, não 7. Ao conferir o que está em PROD, use
+`git log --oneline origin/main..origin/dev` em vez de confiar nesta seção.
 
 Cinco commits no dia, nesta ordem:
 
@@ -609,6 +616,94 @@ mas vale saber antes de alguém pôr um `enum` com nomes de cliente).
 
 **Quando confirmar:** o `normalizarColecoes` fica como rede. Se ele parar de
 disparar nas próximas rodadas, aí sim vira código morto e sai.
+
+### Tasks O a R — Quem executa o passo, e como isso aparece  ·  **pedidas em 2026-08-05, a partir do BPMN do cliente**
+
+> **BLOQUEADAS ATÉ VER O BPMN DO CLIENTE.** As quatro descrevem convenções que o
+> cliente já usa. Escrever schema, prompt ou paleta antes de ver o arquivo é
+> inventar uma convenção e depois descobrir que era outra — o desperdício mais
+> caro dessa lista, porque contamina os dois prompts e a colorização de uma vez.
+> **O que precisa do arquivo:** o `.bpmn` (ou export) em `test-documents/`, que já
+> é gitignorado — e isso importa, porque **o repositório é público** por decisão
+> do dono (Task A). Nada de cliente pode ser commitado.
+
+**Leia como um tema, não como quatro itens.** As Tasks P e R respondem à MESMA
+pergunta — *quem executa isto?* — uma no nó e outra na raia. A Task O provavelmente
+só desenha a resposta. A Task Q é a aresta entre os executores. Feitas isoladas,
+as quatro mexem no mesmo campo do schema quatro vezes; feitas como tema, é uma
+mudança de schema e quatro consumidores dela.
+
+**Ordem que isso sugere:** decidir o eixo do executor (P + R juntas) → desenhar
+(O) → ligar (Q). E antes de tudo, ler o BPMN do cliente.
+
+#### Task O — Padronizar a semântica das cores  ·  sem API
+
+**Pedido literal:** *"cores são chamadas, padronizar isso"*.
+
+Hoje `src/bpmnColor.ts` pinta por **tipo de elemento**, com a paleta Alpar
+(marinho `#153f71`, ciano `#009fe3`): a cor é decoração consistente, não
+informação. O pedido parece ser o contrário — a cor **significar** algo, e o
+significado ser padrão. **Qual significado é exatamente o que falta saber**, e é
+uma das primeiras coisas a ler no arquivo do cliente.
+
+Ponto de partida técnico já é favorável: a colorização é uma passada isolada sobre
+a DI (`colorizeBpmn`), best-effort e coberta por teste. Trocar o **critério** da
+cor não mexe em geometria nem em semântica BPMN — mexe numa função.
+
+**Em aberto, e depende do arquivo:** a cor sai de quê? Do executor (aí O depende
+de P e R), do tipo de nó (o que já faz), ou de uma categoria própria que o cliente
+mantém? Se for do executor, **não comece por O.**
+
+#### Task P — Executor: pessoa ou agente  ·  sem API pra escrever
+
+**Pedido literal:** *"Roles, tarefas das pessoas nas raias são agente e pessoas"*.
+
+Hoje o schema tem `user_task` (pessoa) e `service_task` (sistema). **Não existe
+agente** — e essa é uma terceira categoria de verdade, não um detalhe: um passo
+executado por um agente de IA não é tarefa humana nem chamada de sistema, e tratar
+como uma das duas apaga justamente a informação que o cliente quer ver.
+
+**Gotcha de BPMN, e é o que decide o custo:** o padrão **não tem** tipo nativo para
+"agente". As saídas possíveis são (a) `service_task` com anotação, (b) `user_task`
+com anotação, ou (c) extensão própria. A escolha muda o que sai no XML e o que o
+ServiceNow entende do outro lado — **decidir antes de escrever**, não durante.
+
+Os mesmos 4 passos de qualquer tipo novo (ver Task F): schema + `gen:types` → os
+dois prompts → `bpmnNodes.ts` **e** os dois compiladores → teste em fixtures.
+
+#### Task Q — Comunicação entre sistemas  ·  **conferir a Task B primeiro**
+
+**Pedido literal:** *"Comunicação entre sistemas"*.
+
+**Isto sobrepõe a Task B**, que já existe neste documento: message flows entre
+pools, com `message_flows` no schema e `bpmn:MessageFlow` desenhado no
+`laneLayout.ts`. Antes de tratar como task nova, ler a B e decidir qual dos dois
+casos é:
+
+- **é só a seta** entre dois sistemas → é a Task B, sem nada novo;
+- **é mais que a seta** (protocolo, payload, síncrono × assíncrono, direção,
+  quem inicia) → é a Task B **mais** campo novo, e aí sim é uma task própria.
+
+O BPMN do cliente responde isso na hora: ou as setas entre sistemas são simples,
+ou vêm rotuladas com alguma informação.
+
+#### Task R — Raia a partir de sistema  ·  sem API
+
+**Pedido literal:** *"Raias a partir de sistemas, por exemplo, ServiceNow, Claude,
+Databricks"*.
+
+Hoje uma `lane` é departamento ou papel, e `participants` são organizações
+(`internal`/`external`). Um sistema não é nenhum dos dois. Hoje ele viraria uma
+raia com nome de sistema **por acidente** — nada no spec diria que aquilo é um
+sistema, então nada a jusante pode tratá-lo como tal (nem a cor da Task O, nem o
+vocabulário ServiceNow da Task G).
+
+**É o mesmo eixo da Task P** — as duas respondem "quem executa", uma no nó e outra
+na raia. Fazer juntas: o campo é o mesmo.
+
+**Encaixa com a Task G** (vocabulário ServiceNow): "Claude" e "Databricks" como
+raias são exatamente os sistemas externos que uma `Action` / Integration Hub
+chamaria. Vale ler as duas juntas.
 
 ### ~~Task L — Dois bugs de layout~~  ·  **✅ os dois feitos em 2026-08-05**
 
